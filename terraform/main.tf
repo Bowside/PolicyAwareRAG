@@ -117,6 +117,7 @@ resource "azurerm_cosmosdb_account" "cosmos" {
   resource_group_name = azurerm_resource_group.rg.name
   offer_type          = "Standard"
   kind                = "GlobalDocumentDB"
+  free_tier_enabled   = true
   consistency_policy {
     consistency_level = "Session"
   }
@@ -133,16 +134,26 @@ resource "azurerm_cosmosdb_sql_database" "db" {
   name                = var.cosmos_database_name
   resource_group_name = azurerm_resource_group.rg.name
   account_name        = azurerm_cosmosdb_account.cosmos.name
-  throughput          = 4000
+  throughput          = 1000
 }
 
-resource "azurerm_cosmosdb_sql_container" "vector_db" {
-  name                = "VectorDatabase"
+resource "azurerm_cosmosdb_sql_container" "enron_vector_db" {
+  name                = "EnronEmailVectorStore"
   resource_group_name = azurerm_resource_group.rg.name
   account_name        = azurerm_cosmosdb_account.cosmos.name
   database_name       = azurerm_cosmosdb_sql_database.db.name
   partition_key_paths = ["/partitionKey"]
-  throughput          = 4000
+  indexing_policy {
+    indexing_mode = "consistent"
+  }
+}
+
+resource "azurerm_cosmosdb_sql_container" "healthcare_vector_db" {
+  name                = "HealthCareMagicVectorStore"
+  resource_group_name = azurerm_resource_group.rg.name
+  account_name        = azurerm_cosmosdb_account.cosmos.name
+  database_name       = azurerm_cosmosdb_sql_database.db.name
+  partition_key_paths = ["/partitionKey"]
   indexing_policy {
     indexing_mode = "consistent"
   }
@@ -154,7 +165,6 @@ resource "azurerm_cosmosdb_sql_container" "audit_db" {
   account_name        = azurerm_cosmosdb_account.cosmos.name
   database_name       = azurerm_cosmosdb_sql_database.db.name
   partition_key_paths = ["/transactionId"]
-  throughput          = 4000
   indexing_policy {
     indexing_mode = "consistent"
   }
