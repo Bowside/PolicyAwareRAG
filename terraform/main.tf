@@ -219,22 +219,6 @@ resource "azurerm_cognitive_deployment" "gpt55" {
   }
 }
 
-resource "azurerm_cognitive_deployment" "text_embedding" {
-  name                 = var.embedding_model_deployment_name
-  cognitive_account_id = azurerm_cognitive_account.ai_foundry.id
-
-  model {
-    format  = "OpenAI"
-    name    = var.embedding_model_name
-    version = var.embedding_model_version
-  }
-
-  sku {
-    name     = var.embedding_model_sku_name
-    capacity = var.embedding_model_capacity
-  }
-}
-
 resource "azurerm_role_assignment" "func_ai_contributor" {
   scope                = azurerm_cognitive_account.ai_foundry.id
   role_definition_name = "Cognitive Services User"
@@ -260,14 +244,6 @@ resource "azurerm_key_vault_secret" "ai_foundry_project_id" {
 resource "azurerm_key_vault_secret" "ai_chat_deployment_name" {
   name         = "ai-chat-deployment-name"
   value        = azurerm_cognitive_deployment.gpt55.name
-  key_vault_id = azurerm_key_vault.kv.id
-
-  depends_on = [azurerm_key_vault_access_policy.terraform]
-}
-
-resource "azurerm_key_vault_secret" "ai_embedding_deployment_name" {
-  name         = "ai-embedding-deployment-name"
-  value        = azurerm_cognitive_deployment.text_embedding.name
   key_vault_id = azurerm_key_vault.kv.id
 
   depends_on = [azurerm_key_vault_access_policy.terraform]
@@ -317,8 +293,4 @@ output "ai_foundry_project_id" {
 
 output "gpt_model_deployment_name" {
   value = azurerm_cognitive_deployment.gpt55.name
-}
-
-output "embedding_model_deployment_name" {
-  value = azurerm_cognitive_deployment.text_embedding.name
 }

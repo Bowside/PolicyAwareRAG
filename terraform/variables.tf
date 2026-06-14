@@ -68,29 +68,3 @@ variable "gpt_model_capacity" {
   type    = number
   default = 10
 }
-
-variable "embedding_model_deployment_name" {
-  type    = string
-  default = "text-embedding"
-}
-
-variable "embedding_model_name" {
-  type    = string
-  default = "text-embedding-3-large"
-}
-
-variable "embedding_model_version" {
-  type    = string
-  default = null
-  nullable = true
-}
-
-variable "embedding_model_sku_name" {
-  type    = string
-  default = "GlobalStandard"
-}
-
-variable "embedding_model_capacity" {
-  type    = number
-  default = 10
-}

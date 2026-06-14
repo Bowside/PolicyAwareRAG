@@ -11,18 +11,13 @@ param(
     [string]$SubscriptionId = "85cec0e7-ca91-4f06-a77c-f951f264ba2d",
     [string]$Region = "West Europe",
     [string]$ResourceGroup = "PolicyAwareRAG",
-    [string]$Environment = "dev",
+    [string]$Environment = "nonprod",
     [string]$FoundryProjectName = "PolicyAwareRag",
     [string]$GptModelDeploymentName = "gpt-4o-mini",
     [string]$GptModelName = "gpt-4o-mini",
     [string]$GptModelVersion = "",
     [int]$GptModelCapacity = 10,
-    [string]$GptModelSkuName = "GlobalStandard",
-    [string]$EmbeddingModelDeploymentName = "text-embedding",
-    [string]$EmbeddingModelName = "text-embedding-3-large",
-    [string]$EmbeddingModelVersion = "",
-    [int]$EmbeddingModelCapacity = 10,
-    [string]$EmbeddingModelSkuName = "GlobalStandard"
+    [string]$GptModelSkuName = "GlobalStandard"
 )
 
 function Ensure-Command {
@@ -68,14 +63,14 @@ if (-not $tenantId) {
 # Build a basic project prefix (Terraform expects a single project_prefix variable); per-service names
 # follow the convention: {2-letter service}{region3}policyawarerag{env}
 $env = $Environment
-$projectPrefix = "policyawarerag$env"
+$projectPrefix = "par$env"
 
 $exampleNames = @{
-    function = "fa${RegionCode}policyawarerag${env}"
-    storage  = "st${RegionCode}policyawarerag${env}"
-    keyvault = "kv${RegionCode}policyawarerag${env}"
-    cosmos   = "db${RegionCode}policyawarerag${env}"
-    ai       = "ai${RegionCode}policyawarerag${env}"
+    function = "fa${RegionCode}par${env}"
+    storage  = "st${RegionCode}par${env}"
+    keyvault = "kv${RegionCode}par${env}"
+    cosmos   = "db${RegionCode}par${env}"
+    ai       = "ai${RegionCode}par${env}"
 }
 
 Write-Host "Example resource names (follow naming convention):"
@@ -104,19 +99,11 @@ $terraformVars = @(
     "-var", "gpt_model_deployment_name=$GptModelDeploymentName",
     "-var", "gpt_model_name=$GptModelName",
     "-var", "gpt_model_capacity=$GptModelCapacity",
-    "-var", "gpt_model_sku_name=$GptModelSkuName",
-    "-var", "embedding_model_deployment_name=$EmbeddingModelDeploymentName",
-    "-var", "embedding_model_name=$EmbeddingModelName",
-    "-var", "embedding_model_capacity=$EmbeddingModelCapacity",
-    "-var", "embedding_model_sku_name=$EmbeddingModelSkuName"
+    "-var", "gpt_model_sku_name=$GptModelSkuName"
 )
 
 if (-not [string]::IsNullOrWhiteSpace($GptModelVersion)) {
     $terraformVars += @("-var", "gpt_model_version=$GptModelVersion")
-}
-
-if (-not [string]::IsNullOrWhiteSpace($EmbeddingModelVersion)) {
-    $terraformVars += @("-var", "embedding_model_version=$EmbeddingModelVersion")
 }
 
 terraform apply -auto-approve @terraformVars
