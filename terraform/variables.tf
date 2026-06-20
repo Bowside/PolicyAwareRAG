@@ -8,7 +8,7 @@ variable "subscription_id" {
 
 variable "rg_name" {
   type    = string
-  default = "policy-rg"
+  default = "PolicyAwareRAG"
 }
 
 variable "location" {

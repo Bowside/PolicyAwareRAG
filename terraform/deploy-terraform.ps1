@@ -12,7 +12,7 @@ param(
     [string]$Region = "West Europe",
     [string]$ResourceGroup = "PolicyAwareRAG",
     [string]$Environment = "nonprod",
-    [string]$FoundryProjectName = "PolicyAwareRag",
+    [string]$FoundryProjectName = "PolicyAwareRAG",
     [string]$GptModelDeploymentName = "gpt-4o-mini",
     [string]$GptModelName = "gpt-4o-mini",
     [string]$GptModelVersion = "",
@@ -63,14 +63,14 @@ if (-not $tenantId) {
 # Build a basic project prefix (Terraform expects a single project_prefix variable); per-service names
 # follow the convention: {2-letter service}{region3}policyawarerag{env}
 $env = $Environment
-$projectPrefix = "par$env"
+$projectPrefix = "rag$env"
 
 $exampleNames = @{
-    function = "fa${RegionCode}par${env}"
-    storage  = "st${RegionCode}par${env}"
-    keyvault = "kv${RegionCode}par${env}"
-    cosmos   = "db${RegionCode}par${env}"
-    ai       = "ai${RegionCode}par${env}"
+    function = "fa${RegionCode}rag${env}"
+    storage  = "st${RegionCode}rag${env}"
+    keyvault = "kv${RegionCode}rag${env}"
+    cosmos   = "db${RegionCode}rag${env}"
+    ai       = "ai${RegionCode}rag${env}"
 }
 
 Write-Host "Example resource names (follow naming convention):"

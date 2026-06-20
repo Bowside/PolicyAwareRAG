@@ -40,7 +40,7 @@ resource "azurerm_service_plan" "func_plan" {
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
   os_type             = "Linux"
-  sku_name            = "FC1"
+  sku_name            = "Y1"
   tags = var.common_tags
 }
 
