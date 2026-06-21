@@ -1,0 +1,17 @@
+{
+  "@context": "https://www.w3.org/ns/odrl.jsonld",
+  "type": "Set",
+  "uid": "policy:privacy-analyst",
+  "profile": "PolicyAwareRAG base access policies",
+  "rules": [
+    {
+      "uid": "rule:privacy-analyst:investigation",
+      "action": ["summarise", "summarize", "retrieve", "audit", "redact"],
+      "assigner": "PolicyAwareRAG",
+      "assignee": "privacy-analyst",
+      "constraint": {
+        "purpose": ["compliance_review", "fraud_detection", "security_review", "privacy_review"]
+      }
+    }
+  ]
+}

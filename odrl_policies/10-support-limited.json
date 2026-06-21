@@ -1,0 +1,17 @@
+{
+  "@context": "https://www.w3.org/ns/odrl.jsonld",
+  "type": "Set",
+  "uid": "policy:support-limited",
+  "profile": "PolicyAwareRAG base access policies",
+  "rules": [
+    {
+      "uid": "rule:support-limited:case-handling",
+      "action": ["summarise", "summarize", "retrieve", "audit"],
+      "assigner": "PolicyAwareRAG",
+      "assignee": "support-limited",
+      "constraint": {
+        "purpose": ["customer_support", "case_management", "incident_triage"]
+      }
+    }
+  ]
+}

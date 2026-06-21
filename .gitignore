@@ -11,7 +11,6 @@ env/
 
 # Local environment and secrets
 local.settings.json
-utils/set_env_vars.ps1
 *.local
 .env
 .env.*
@@ -27,6 +26,11 @@ terraform/*.tfvars
 terraform/*.tfvars.json
 
 # Editor/OS noise
-.vscode/
+
 .DS_Store
 Thumbs.db
+
+# Temporary files
+enron_mail_20150507.tar.gz
+
+.python_packages

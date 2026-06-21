@@ -1,0 +1,17 @@
+{
+  "@context": "https://www.w3.org/ns/odrl.jsonld",
+  "type": "Set",
+  "uid": "policy:no-pii-observer",
+  "profile": "PolicyAwareRAG base access policies",
+  "rules": [
+    {
+      "uid": "rule:no-pii-observer:summary-only",
+      "action": ["summarise", "summarize", "retrieve"],
+      "assigner": "PolicyAwareRAG",
+      "assignee": "no-pii-observer",
+      "constraint": {
+        "purpose": ["metadata_review", "routing", "triage"]
+      }
+    }
+  ]
+}

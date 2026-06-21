@@ -1,0 +1,14 @@
+{
+  "@context": "https://www.w3.org/ns/odrl.jsonld",
+  "type": "Set",
+  "uid": "policy:full-access",
+  "profile": "PolicyAwareRAG base access policies",
+  "rules": [
+    {
+      "uid": "rule:full-access:all-supported-actions",
+      "action": ["summarise", "summarize", "retrieve", "audit", "redact", "export"],
+      "assigner": "PolicyAwareRAG",
+      "assignee": "full-access"
+    }
+  ]
+}
