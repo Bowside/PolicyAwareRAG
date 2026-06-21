@@ -100,17 +100,37 @@ def _install_azure_stubs():
 
     cosmos_mod = types.ModuleType("azure.cosmos")
 
+    class _FakeContainer:
+        def __init__(self):
+            self.created_items = []
+            self.upserted_items = []
+
+        def query_items(self, *ia, **ik):
+            return []
+
+        def create_item(self, *, body, **ck):
+            self.created_items.append(body)
+            return body
+
+        def upsert_item(self, *, body, **ck):
+            self.upserted_items.append(body)
+            return body
+
+    class _FakeDatabaseClient:
+        def __init__(self):
+            self.container = _FakeContainer()
+
+        def get_container_client(self, *args, **kwargs):
+            return self.container
+
     class _FakeCosmosClient:
+        _last_database_client = _FakeDatabaseClient()
+
         def __init__(self, *args, **kwargs):
-            pass
+            self.database_client = self._last_database_client
 
         def get_database_client(self, *args, **kwargs):
-            return types.SimpleNamespace(
-                get_container_client=lambda *a, **k: types.SimpleNamespace(
-                    query_items=lambda *ia, **ik: [],
-                    create_item=lambda *ca, **ck: None,
-                )
-            )
+            return self.database_client
 
     cosmos_mod.CosmosClient = _FakeCosmosClient
 
@@ -212,3 +232,60 @@ def test_generate_response_activity_uses_ai_foundry_chat_completion():
     assert captured["url"].endswith("/chat/completions?api-version=2024-05-01-preview")
     assert captured["body"]["model"] == "test-model"
     assert "What is the policy outcome?" in captured["body"]["messages"][1]["content"]
+
+
+def test_build_audit_event_includes_request_policy_and_outcome():
+    _install_azure_stubs()
+    sys.modules.pop("orchestrator", None)
+    orchestrator = importlib.import_module("orchestrator")
+
+    audit_event = orchestrator.build_audit_event(
+        transaction_id="11111111-1111-1111-1111-111111111111",
+        timestamp=importlib.import_module("datetime").datetime(2026, 1, 1, 12, 0, 0),
+        principal={"userId": "user-1", "role": "privacy-analyst", "declaredIntent": "compliance_review"},
+        odrl_policy={"uid": "policy:privacy-analyst"},
+        query_text="Summarise the approved content.",
+        query_embedding=[0.1, 0.2, 0.3],
+        action="summarise",
+        cosmos_collection="EnronEmailVectorStore",
+        database_name="policy_rag_db",
+        retrieved=[{"id": "chunk-1", "content": "Allowed information only."}],
+        eval_detail={"matchedRules": ["policy:privacy-analyst"], "satisfied": True, "reasoning": ["allowed"]},
+        allowed=True,
+        guard={"status": "Pass"},
+        enforcement_action_type="Allow",
+        final_payload={"status": "ok", "result": "Approved answer"},
+    )
+
+    assert audit_event["id"] == "11111111-1111-1111-1111-111111111111"
+    assert audit_event["transactionId"] == "11111111-1111-1111-1111-111111111111"
+    assert audit_event["request"]["cosmosCollectionId"] == "EnronEmailVectorStore"
+    assert audit_event["odrlPolicy"]["uid"] == "policy:privacy-analyst"
+    assert audit_event["policyEvaluation"]["ruleType"] == "Permission"
+    assert audit_event["policyEvaluation"]["constraintSatisfaction"] is True
+    assert audit_event["policyEvaluation"]["reasoningTrail"] == "allowed"
+    assert audit_event["enforcementAction"]["complianceGuardStatus"] == "Passed"
+    assert audit_event["outcome"]["result"] == "Approved answer"
+
+
+def test_store_audit_event_activity_upserts_with_transaction_id_as_item_id():
+    _install_azure_stubs()
+    os.environ["COSMOS_KEY"] = "test-cosmos-key"
+    sys.modules.pop("activities", None)
+    activities = importlib.import_module("activities")
+
+    result = activities.StoreAuditEventActivity(
+        {
+            "transactionId": "22222222-2222-2222-2222-222222222222",
+            "cosmos_endpoint": "https://example-cosmos.documents.azure.com:443/",
+            "database": "policy_rag_db",
+            "principal": {"userId": "user-2", "role": "CEO", "declaredIntent": "disciplinary_investigation"},
+            "policyEvaluation": {"matchedPolicyUid": "policy:full-access"},
+            "enforcementAction": {"actionType": "Allow", "filteredNodesCount": 1, "complianceGuardStatus": "Passed"},
+            "outcome": {"status": "ok", "result": "Approved answer"},
+        }
+    )
+
+    assert result == {"status": "ok"}
+    container = activities.CosmosClient._last_database_client.get_container_client("AuditStorage")
+    assert container.upserted_items[0]["id"] == "22222222-2222-2222-2222-222222222222"
