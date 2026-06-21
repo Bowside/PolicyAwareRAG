@@ -70,7 +70,12 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
             "complianceGuardStatus": guard["status"]
         }
     }
-    yield context.call_activity("StoreAuditEventActivity", audit_event)
+    # Include Cosmos connection info so StoreAuditEventActivity can persist the event
+    audit_event["cosmos_endpoint"] = cosmos_endpoint
+    audit_event["database"] = database_name
+    store_result = yield context.call_activity("StoreAuditEventActivity", audit_event)
+    if isinstance(store_result, dict) and store_result.get("status") != "ok":
+        logging.warning("StoreAuditEventActivity returned non-ok status: %s", store_result)
 
     return final_payload
 
