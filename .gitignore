@@ -25,6 +25,13 @@ terraform/crash.*.log
 terraform/*.tfvars
 terraform/*.tfvars.json
 
+# Azurite Functions artifacts
+__azurite_db_blob__.jsongit 
+__azurite_db_blob_extent__.json
+__azurite_db_queue__.json
+__azurite_db_queue_extent__.json
+__azurite_db_table__.json
+
 # Editor/OS noise
 
 .DS_Store
@@ -32,5 +39,4 @@ Thumbs.db
 
 # Temporary files
 enron_mail_20150507.tar.gz
-
 .python_packages

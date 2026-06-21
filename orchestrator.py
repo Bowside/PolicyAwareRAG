@@ -24,6 +24,9 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
     odrl_policy = input_payload.get("odrl_policy", {})
     query_embedding = input_payload.get("query_embedding", [])
     action = input_payload.get("action", "summarise")
+    cosmos_endpoint = input_payload.get("cosmos_endpoint")
+    database_name = input_payload.get("database", "policy_rag_db")
+    cosmos_collection = input_payload.get("cosmos_collection", "VectorDatabase")
 
     pv = PolicyPurposeValidator(odrl_policy)
     allowed, eval_detail = pv.evaluate(principal.get("role",""), principal.get("declaredIntent",""), action)
@@ -31,8 +34,7 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
     retrieved = []
     if allowed:
         security_filters = {"allowedRole": principal.get("role")}
-        cosmos_endpoint = input_payload.get("cosmos_endpoint")
-        retriever = ConflictAwareRetriever(cosmos_endpoint, input_payload.get("database","policy_rag_db"), "VectorDatabase")
+        retriever = ConflictAwareRetriever(cosmos_endpoint, database_name, cosmos_collection)
         retrieved = retriever.retrieve(query_embedding, security_filters, top_k=10)
 
     mag = MultiAgentGraph(agents=[restrictive_agent, permissive_agent])

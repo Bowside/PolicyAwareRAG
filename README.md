@@ -123,16 +123,16 @@ For local execution:
 1. Install Python 3.11 and Azure Functions Core Tools.
 2. Create and activate a virtual environment.
 3. Install the dependencies from `requirements.txt`.
-4. Set the local app settings to match your deployed resources, especially `AzureWebJobsStorage`, `FUNCTIONS_WORKER_RUNTIME`, `COSMOS_DB_ENDPOINT`, `COSMOS_DB_DATABASE`, `BLOB_CONTAINER`, `KEYVAULT_NAME`, and `AI_FOUNDRY_ENDPOINT`.
+4. Set the local app settings to match your deployed resources, especially `AzureWebJobsStorage`, `FUNCTIONS_WORKER_RUNTIME`, `COSMOS_DB_ENDPOINT`, and `COSMOS_DB_DATABASE`.
 5. Start the host from the project root with Azure Functions Core Tools.
-6. Call `POST /api/orchestrators/start` with a JSON body to start a durable orchestration instance.
+6. Call `POST /api/orchestrators/start` with a JSON body that includes `cosmos_collection` to choose the Cosmos container the query should run against.
 
 For Azure execution:
 
 1. Use `terraform -chdir=terraform output` to get the deployed Function App name and supporting resource values.
 2. Confirm the Function App application settings match the deployed resources and secrets in Key Vault.
 3. Deploy the Python function code to the Azure Function App.
-4. Invoke `POST /api/orchestrators/start` with a payload that includes `principal`, `odrl_policy`, `query_embedding`, `action`, `cosmos_endpoint`, and `database`.
+4. Invoke `POST /api/orchestrators/start` with a payload that includes `principal`, `odrl_policy`, `query_embedding`, `action`, and `cosmos_collection`. The function app supplies the Cosmos endpoint and database from application settings.
 5. Use one of the policies in `odrl_policies/` to test a restrictive role, a limited role, or a full-access role.
 6. Review Application Insights and Function App logs if the orchestration fails, returns a denied response, or redacts output.
 
