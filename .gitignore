@@ -26,7 +26,7 @@ terraform/*.tfvars
 terraform/*.tfvars.json
 
 # Azurite Functions artifacts
-__azurite_db_blob__.jsongit 
+__azurite_db_blob__.json
 __azurite_db_blob_extent__.json
 __azurite_db_queue__.json
 __azurite_db_queue_extent__.json
