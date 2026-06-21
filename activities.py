@@ -164,7 +164,11 @@ def StoreAuditEventActivity(event: dict) -> dict:
         db = client.get_database_client(event.get("database", "policy_rag_db"))
         container = db.get_container_client("AuditStorage")
         event_doc = event.copy()
-        container.create_item(body=event_doc)
+        event_doc.setdefault("id", event_doc.get("transactionId"))
+        if not event_doc.get("id"):
+            return {"status": "missing_id"}
+
+        container.upsert_item(body=event_doc)
         return {"status": "ok"}
     except Exception as e:
         logging.exception("failed to store audit event")
