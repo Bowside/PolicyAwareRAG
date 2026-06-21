@@ -1,5 +1,6 @@
 import logging
-from azure.identity import DefaultAzureCredential
+import os
+
 from azure.cosmos import CosmosClient
 
 def GenerateResponseActivity(req: dict) -> str:
@@ -39,7 +40,10 @@ def StoreAuditEventActivity(event: dict) -> dict:
         A status dictionary indicating success, missing configuration, or error details.
     """
     try:
-        credential = DefaultAzureCredential()
+        credential = os.environ.get("COSMOS_KEY")
+        if not credential:
+            return {"status": "missing_key"}
+
         endpoint = event.get("cosmos_endpoint")
         if not endpoint:
             return {"status": "missing_endpoint"}
