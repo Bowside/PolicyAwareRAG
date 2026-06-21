@@ -1,5 +1,7 @@
 # Python cache and bytecode
 __pycache__/
+__blobstorage__
+__queuestorage__
 *.py[cod]
 *.pyo
 *.pyd
@@ -33,10 +35,11 @@ __azurite_db_queue_extent__.json
 __azurite_db_table__.json
 
 # Editor/OS noise
-
 .DS_Store
 Thumbs.db
+.vscode/*
 
 # Temporary files
 enron_mail_20150507.tar.gz
 .python_packages
+

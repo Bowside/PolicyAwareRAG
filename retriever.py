@@ -1,18 +1,23 @@
-from azure.identity import DefaultAzureCredential
+import os
+from typing import Any, Dict, List, Optional
+
 from azure.cosmos import CosmosClient
-from typing import List, Dict, Any
 import numpy as np
 
 class ConflictAwareRetriever:
-    def __init__(self, cosmos_endpoint: str, database_name: str, container_name: str):
+    def __init__(self, cosmos_endpoint: str, database_name: str, container_name: str, cosmos_key: Optional[str] = None):
         """Create a retriever backed by a Cosmos DB container.
 
         Args:
             cosmos_endpoint: Cosmos DB account endpoint URI.
             database_name: Database name containing the vector container.
             container_name: Container name used for retrieval.
+            cosmos_key: Cosmos DB account key. Falls back to the COSMOS_KEY environment variable.
         """
-        credential = DefaultAzureCredential()
+        credential = cosmos_key or os.environ.get("COSMOS_KEY")
+        if not credential:
+            raise ValueError("COSMOS_KEY must be provided to initialize the Cosmos client.")
+
         self.client = CosmosClient(url=cosmos_endpoint, credential=credential)
         self.db = self.client.get_database_client(database_name)
         self.container = self.db.get_container_client(container_name)
