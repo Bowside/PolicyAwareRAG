@@ -2,7 +2,6 @@ import logging
 import azure.durable_functions as df
 from policy_validator import PolicyPurposeValidator
 from retriever import ConflictAwareRetriever
-from graph_state import MultiAgentGraph, restrictive_agent, permissive_agent
 from compliance_guard import compliance_guard
 import uuid
 from datetime import datetime
@@ -23,6 +22,7 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
     principal = input_payload.get("principal", {})
     odrl_policy = input_payload.get("odrl_policy", {})
     query_embedding = input_payload.get("query_embedding", [])
+    query_text = input_payload.get("query_text") or input_payload.get("query") or ""
     action = input_payload.get("action", "summarise")
     cosmos_endpoint = input_payload.get("cosmos_endpoint")
     database_name = input_payload.get("database", "policy_rag_db")
@@ -37,18 +37,37 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
         retriever = ConflictAwareRetriever(cosmos_endpoint, database_name, cosmos_collection)
         retrieved = retriever.retrieve(query_embedding, security_filters, top_k=10)
 
-    mag = MultiAgentGraph(agents=[restrictive_agent, permissive_agent])
-    decision_result = mag.evaluate(retrieved, {"satisfied": allowed, **eval_detail})
-
-    generated = ""
-    if decision_result["decision"] == "Allow":
-        generated = yield context.call_activity("GenerateResponseActivity", {"query_embedding": query_embedding, "retrieved": retrieved})
-    elif decision_result["decision"] == "Partial_Redaction":
-        generated = yield context.call_activity("GenerateRedactedResponseActivity", {"retrieved": retrieved})
-    else:
+    if not allowed:
         generated = "Request denied due to policy restrictions."
+        guard = {"status": "Pass", "action": "Release", "findings": []}
+    else:
+        generated = yield context.call_activity(
+            "GenerateResponseActivity",
+            {
+                "query_text": query_text,
+                "query_embedding": query_embedding,
+                "retrieved": retrieved,
+                "principal": principal,
+                "policy_evaluation": eval_detail,
+                "action": action,
+            },
+        )
 
-    guard = compliance_guard(generated, retrieved)
+        guard = compliance_guard(generated, retrieved)
+        if guard["status"] == "Fail":
+            logging.warning("Compliance guard blocked generated response: %s", guard["findings"])
+            generated = yield context.call_activity(
+                "GenerateRedactedResponseActivity",
+                {
+                    "query_text": query_text,
+                    "retrieved": retrieved,
+                    "principal": principal,
+                    "policy_evaluation": eval_detail,
+                    "action": action,
+                },
+            )
+            guard = compliance_guard(generated, retrieved)
+
     if guard["status"] == "Fail":
         final_payload = {"status": "denied", "reason": guard["findings"]}
     else:
@@ -65,7 +84,7 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
             "reasoningTrail": eval_detail.get("reasoning")
         },
         "enforcementAction": {
-            "actionType": decision_result["decision"],
+            "actionType": "Allow" if allowed else "Deny",
             "filteredNodesCount": len(retrieved),
             "complianceGuardStatus": guard["status"]
         }

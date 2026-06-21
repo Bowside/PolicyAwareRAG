@@ -1,7 +1,9 @@
+import json
 import importlib
 import os
 import sys
 import types
+from unittest import mock
 
 
 class _FakeHttpResponse:
@@ -161,3 +163,52 @@ def test_start_orchestration_rejects_invalid_json():
     response = importlib.import_module("asyncio").run(function_app.start_orchestration(_BadRequest(None), _FakeDurableClient()))
 
     assert response.status_code == 400
+
+
+def test_generate_response_activity_uses_ai_foundry_chat_completion():
+    _install_azure_stubs()
+    os.environ["AI_FOUNDRY_Endpoint"] = "https://example-foundry.services.ai.azure.com/models"
+    os.environ["AI_FOUNDRY_KEY"] = "test-key"
+    os.environ["AI_FOUNDRY_MODEL"] = "test-model"
+    sys.modules.pop("activities", None)
+    activities = importlib.import_module("activities")
+
+    class _FakeUrlResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return self._payload
+
+    captured = {}
+
+    def _fake_urlopen(request, timeout=60):
+        captured["url"] = request.full_url
+        captured["headers"] = dict(request.headers)
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        response_body = json.dumps(
+            {"choices": [{"message": {"content": "Approved answer"}}]}
+        ).encode("utf-8")
+        return _FakeUrlResponse(response_body)
+
+    with mock.patch.object(activities.urllib.request, "urlopen", side_effect=_fake_urlopen):
+        result = activities.GenerateResponseActivity(
+            {
+                "query_text": "What is the policy outcome?",
+                "retrieved": [{"id": "chunk-1", "content": "Allowed information only."}],
+                "principal": {"role": "privacy-analyst", "declaredIntent": "compliance_review"},
+                "policy_evaluation": {"satisfied": True, "matchedRules": ["rule-1"]},
+                "action": "summarise",
+            }
+        )
+
+    assert result == "Approved answer"
+    assert captured["url"].endswith("/chat/completions?api-version=2024-05-01-preview")
+    assert captured["body"]["model"] == "test-model"
+    assert "What is the policy outcome?" in captured["body"]["messages"][1]["content"]
