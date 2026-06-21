@@ -1,4 +1,5 @@
 import importlib
+import os
 import sys
 import types
 
@@ -71,6 +72,8 @@ def _install_azure_stubs():
         def size(self):
             return len(self)
 
+    numpy_mod.ndarray = _FakeArray
+
     class _FakeLinalg:
         @staticmethod
         def norm(values):
@@ -118,6 +121,7 @@ def _install_azure_stubs():
     durable_mod.DFApp = _FakeFunctionApp
     durable_mod.DurableOrchestrationContext = object
     durable_mod.DurableOrchestrationClient = _FakeDurableClient
+    durable_mod.Orchestrator = types.SimpleNamespace(create=lambda func: func)
 
     sys.modules["azure"] = azure_pkg
     sys.modules["numpy"] = numpy_mod
@@ -129,16 +133,20 @@ def _install_azure_stubs():
 
 def test_start_orchestration_returns_check_status_response():
     _install_azure_stubs()
+    os.environ["COSMOS_DB_ENDPOINT"] = "https://example-cosmos.documents.azure.com:443/"
+    os.environ["COSMOS_DB_DATABASE"] = "policy_rag_db"
     sys.modules.pop("function_app", None)
     function_app = importlib.import_module("function_app")
 
     client = _FakeDurableClient()
-    request = _FakeRequest({"principal": {"role": "privacy-analyst"}})
+    request = _FakeRequest({"principal": {"role": "privacy-analyst"}, "cosmos_collection": "VectorDatabase"})
 
     response = importlib.import_module("asyncio").run(function_app.start_orchestration(request, client))
 
     assert response == {"instanceId": "instance-123", "method": "POST"}
     assert client.started[0] == "orchestrator"
+    assert client.started[2]["cosmos_endpoint"] == "https://example-cosmos.documents.azure.com:443/"
+    assert client.started[2]["database"] == "policy_rag_db"
 
 
 def test_start_orchestration_rejects_invalid_json():
