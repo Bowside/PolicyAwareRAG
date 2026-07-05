@@ -12,8 +12,22 @@ class PolicyPurposeValidator:
         Raises:
             ValueError: If the policy cannot be validated against the ODRL model.
         """
+        # Preprocess incoming policy to be tolerant of missing optional fields
+        # Ensure 'rules' is a list and each rule contains a 'constraint' key
+        prepped = dict(odrl_jsonld) if odrl_jsonld is not None else {}
+        rules = prepped.get("rules")
+        if isinstance(rules, list):
+            new_rules = []
+            for r in rules:
+                if isinstance(r, dict):
+                    if "constraint" not in r:
+                        r = dict(r)
+                        r["constraint"] = {}
+                new_rules.append(r)
+            prepped["rules"] = new_rules
+
         try:
-            self.policy = ODRLPolicy(**odrl_jsonld)
+            self.policy = ODRLPolicy(**prepped)
         except ValidationError as e:
             raise ValueError(f"Invalid ODRL policy: {e}")
 

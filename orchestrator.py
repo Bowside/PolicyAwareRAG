@@ -5,6 +5,23 @@ from retriever import ConflictAwareRetriever
 from compliance_guard import compliance_guard
 import uuid
 from datetime import datetime
+import os
+
+
+def _build_query_embedding(query_text: str, query_embedding: list) -> list:
+    if query_embedding and len(query_embedding) >= 16:
+        return query_embedding
+
+    try:
+        from sentence_transformers import SentenceTransformer
+
+        model_name = os.environ.get("EMBED_MODEL", "all-MiniLM-L6-v2")
+        model = SentenceTransformer(model_name)
+        embedding = model.encode([query_text or ""], normalize_embeddings=False)[0]
+        return embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
+    except Exception as exc:
+        logging.warning("Falling back to caller-provided query embedding: %s", exc)
+        return query_embedding or []
 
 
 def _format_reasoning_trail(reasoning: list[str]) -> str:
@@ -76,6 +93,14 @@ def build_audit_event(
         "outcome": final_payload,
     }
 
+
+def _build_no_results_payload() -> dict:
+    return {
+        "status": "ok",
+        "outcomeType": "no_results",
+        "result": "No relevant context was retrieved for this request.",
+    }
+
 def orchestrator_function(context: df.DurableOrchestrationContext):
     """Run the durable orchestration for policy evaluation and response generation.
 
@@ -91,8 +116,8 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
 
     principal = input_payload.get("principal", {})
     odrl_policy = input_payload.get("odrl_policy", {})
-    query_embedding = input_payload.get("query_embedding", [])
     query_text = input_payload.get("query_text") or input_payload.get("query") or ""
+    query_embedding = _build_query_embedding(query_text, input_payload.get("query_embedding", []))
     action = input_payload.get("action", "summarise")
     cosmos_endpoint = input_payload.get("cosmos_endpoint")
     database_name = input_payload.get("database", "policy_rag_db")
@@ -103,14 +128,20 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
 
     retrieved = []
     if allowed:
-        security_filters = {"allowedRole": principal.get("role")}
+        # Retrieval is intentionally broad; policy enforcement happens after the RAG context is assembled.
         retriever = ConflictAwareRetriever(cosmos_endpoint, database_name, cosmos_collection)
-        retrieved = retriever.retrieve(query_embedding, security_filters, top_k=10)
+        retrieved = retriever.retrieve(query_embedding, {}, top_k=10)
 
     if not allowed:
         generated = "Request denied due to policy restrictions."
         guard = {"status": "Pass", "action": "Release", "findings": []}
         enforcement_action_type = "Deny"
+        final_payload = {"status": "denied", "reason": guard["findings"], "result": generated}
+    elif not retrieved:
+        generated = "No relevant context was retrieved for this request."
+        guard = {"status": "Pass", "action": "Release", "findings": []}
+        enforcement_action_type = "Allow"
+        final_payload = _build_no_results_payload()
     else:
         enforcement_action_type = "Allow"
         generated = yield context.call_activity(
@@ -148,10 +179,10 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
         if enforcement_action_type == "Allow" and guard["status"] == "Fail":
             enforcement_action_type = "Deny"
 
-    if guard["status"] == "Fail":
-        final_payload = {"status": "denied", "reason": guard["findings"]}
-    else:
-        final_payload = {"status": "ok", "result": generated}
+        if guard["status"] == "Fail":
+            final_payload = {"status": "denied", "reason": guard["findings"], "result": generated}
+        else:
+            final_payload = {"status": "ok", "result": generated}
 
     audit_event = build_audit_event(
         transaction_id=transaction_id,

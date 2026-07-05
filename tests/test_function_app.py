@@ -268,6 +268,38 @@ def test_build_audit_event_includes_request_policy_and_outcome():
     assert audit_event["outcome"]["result"] == "Approved answer"
 
 
+def test_build_audit_event_preserves_no_results_outcome_type():
+    _install_azure_stubs()
+    sys.modules.pop("orchestrator", None)
+    orchestrator = importlib.import_module("orchestrator")
+
+    audit_event = orchestrator.build_audit_event(
+        transaction_id="33333333-3333-3333-3333-333333333333",
+        timestamp=importlib.import_module("datetime").datetime(2026, 1, 1, 12, 0, 0),
+        principal={"userId": "user-3", "role": "CEO", "declaredIntent": "business_review"},
+        odrl_policy={"uid": "policy:full-access"},
+        query_text="Find any matching content.",
+        query_embedding=[0.4, 0.5, 0.6],
+        action="summarise",
+        cosmos_collection="EnronEmailVectorStore",
+        database_name="policy_rag_db",
+        retrieved=[],
+        eval_detail={"matchedRules": ["policy:full-access"], "satisfied": True, "reasoning": ["allowed"]},
+        allowed=True,
+        guard={"status": "Pass"},
+        enforcement_action_type="Allow",
+        final_payload={
+            "status": "ok",
+            "outcomeType": "no_results",
+            "result": "No relevant context was retrieved for this request.",
+        },
+    )
+
+    assert audit_event["outcome"]["outcomeType"] == "no_results"
+    assert audit_event["outcome"]["status"] == "ok"
+    assert audit_event["enforcementAction"]["complianceGuardStatus"] == "Passed"
+
+
 def test_store_audit_event_activity_upserts_with_transaction_id_as_item_id():
     _install_azure_stubs()
     os.environ["COSMOS_KEY"] = "test-cosmos-key"
