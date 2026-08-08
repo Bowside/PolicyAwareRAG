@@ -1,17 +1,65 @@
 {
   "@context": "https://www.w3.org/ns/odrl.jsonld",
-  "type": "Set",
-  "uid": "policy:privacy-analyst",
-  "profile": "PolicyAwareRAG base access policies",
-  "rules": [
+  "@type": "Set",
+  "uid": "urn:policyaware:policy:privacy-compliance-analyst",
+  "profile": "urn:policyaware:profile:pii-access-tier",
+  "permission": [
     {
-      "uid": "rule:privacy-analyst:investigation",
+      "uid": "urn:policyaware:permission:privacy-compliance-analyst:compliance-review",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
       "action": ["summarise", "summarize", "retrieve", "audit", "redact"],
-      "assigner": "PolicyAwareRAG",
-      "assignee": "privacy-analyst",
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:privacy-compliance-analyst",
       "constraint": {
-        "purpose": ["compliance_review", "fraud_detection", "security_review", "privacy_review"]
+        "leftOperand": "purpose",
+        "operator": "eq",
+        "rightOperand": "compliance_review"
       }
+    },
+    {
+      "uid": "urn:policyaware:permission:privacy-compliance-analyst:fraud-detection",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["summarise", "summarize", "retrieve", "audit", "redact"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:privacy-compliance-analyst",
+      "constraint": {
+        "leftOperand": "purpose",
+        "operator": "eq",
+        "rightOperand": "fraud_detection"
+      }
+    },
+    {
+      "uid": "urn:policyaware:permission:privacy-compliance-analyst:security-review",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["summarise", "summarize", "retrieve", "audit", "redact"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:privacy-compliance-analyst",
+      "constraint": {
+        "leftOperand": "purpose",
+        "operator": "eq",
+        "rightOperand": "security_review"
+      }
+    },
+    {
+      "uid": "urn:policyaware:permission:privacy-compliance-analyst:privacy-review",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["summarise", "summarize", "retrieve", "audit", "redact"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:privacy-compliance-analyst",
+      "constraint": {
+        "leftOperand": "purpose",
+        "operator": "eq",
+        "rightOperand": "privacy_review"
+      }
+    }
+  ],
+  "prohibition": [
+    {
+      "uid": "urn:policyaware:prohibition:privacy-compliance-analyst:no-export",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["export"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:privacy-compliance-analyst"
     }
   ]
 }

@@ -1,0 +1,20 @@
+# Exclude local/dev-only content from Azure Functions deployment
+terraform/
+tests/
+utils/
+__azurite_db_blob_extent__.json
+__azurite_db_queue__.json
+__azurite_db_queue_extent__.json
+__azurite_db_table__.json
+__blobstorage__/
+__queuestorage__/
+__pycache__/
+.github/
+.pytest_cache
+*.pyc
+*.pyo
+*.pyd
+*.log
+.vscode/
+.env
+.local.settings.json
