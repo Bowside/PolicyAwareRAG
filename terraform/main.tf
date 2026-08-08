@@ -62,6 +62,7 @@ resource "azurerm_linux_function_app" "gateway_function" {
   app_settings = {
     FUNCTIONS_WORKER_RUNTIME = "python"
     WEBSITE_RUN_FROM_PACKAGE = "1"
+    WEBSITE_MEMORY_LIMIT_MB  = "2048"
     BLOB_CONTAINER           = azurerm_storage_container.landing.name
     KEYVAULT_NAME            = azurerm_key_vault.kv.name
     COSMOS_DB_ACCOUNT        = azurerm_cosmosdb_account.cosmos.endpoint
