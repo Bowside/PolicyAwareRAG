@@ -171,6 +171,114 @@ def test_start_orchestration_returns_check_status_response():
     assert client.started[2]["database"] == "policy_rag_db"
 
 
+def test_orchestrator_defaults_missing_collection_to_sample_store():
+    _install_azure_stubs()
+    sys.modules.pop("orchestrator", None)
+    orchestrator = importlib.import_module("orchestrator")
+
+    captured = {}
+
+    class _FakeRetriever:
+        def __init__(self, cosmos_endpoint, database_name, cosmos_collection):
+            captured["cosmos_endpoint"] = cosmos_endpoint
+            captured["database_name"] = database_name
+            captured["cosmos_collection"] = cosmos_collection
+
+        def retrieve(self, query_embedding, filters, top_k=10):
+            return []
+
+    class _FakeContext:
+        def get_input(self):
+            return {
+                "principal": {"role": "privacy-analyst", "declaredIntent": "compliance_review"},
+                "odrl_policy": {"rules": [{"uid": "rule-1", "action": ["summarise"]}]},
+                "query_text": "Summarise the approved content.",
+                "query_embedding": list(range(16)),
+                "action": "summarise",
+                "cosmos_endpoint": "https://example-cosmos.documents.azure.com:443/",
+                "database": "policy_rag_db",
+            }
+
+        def call_activity(self, *args, **kwargs):
+            if args and args[0] == "StoreAuditEventActivity":
+                return {"status": "ok"}
+            raise AssertionError(f"Unexpected activity call: {args!r} {kwargs!r}")
+
+    with mock.patch.object(orchestrator, "ConflictAwareRetriever", _FakeRetriever), mock.patch.object(
+        orchestrator.PolicyPurposeValidator, "evaluate", return_value=(True, {"satisfied": True, "matchedRules": ["rule-1"]})
+    ):
+        generator = orchestrator.orchestrator_function(_FakeContext())
+        try:
+            first_yield = next(generator)
+            result = generator.send({"status": "ok"})
+        except StopIteration as stop:
+            if 'result' not in locals():
+                result = stop.value
+
+    assert first_yield == {"status": "ok"}
+
+    assert captured["cosmos_collection"] == "EnronEmailVectorStore"
+    assert result["status"] == "ok"
+    assert result["outcomeType"] == "no_results"
+
+
+def test_orchestrator_counts_sender_queries_without_llm():
+    _install_azure_stubs()
+    sys.modules.pop("orchestrator", None)
+    orchestrator = importlib.import_module("orchestrator")
+
+    captured = {}
+
+    class _FakeRetriever:
+        def __init__(self, cosmos_endpoint, database_name, cosmos_collection):
+            captured["cosmos_endpoint"] = cosmos_endpoint
+            captured["database_name"] = database_name
+            captured["cosmos_collection"] = cosmos_collection
+
+        def count_by_sender(self, sender_query):
+            captured["sender_query"] = sender_query
+            return 3
+
+        def retrieve(self, query_embedding, filters, top_k=10):
+            raise AssertionError("retrieve should not be called for count queries")
+
+    class _FakeContext:
+        def get_input(self):
+            return {
+                "principal": {"role": "CEO", "declaredIntent": "business_review"},
+                "odrl_policy": {"rules": [{"uid": "rule-1", "action": ["summarise"]}]},
+                "query_text": "How many emails did Fran Fagan send?",
+                "query_embedding": list(range(16)),
+                "action": "summarise",
+                "cosmos_endpoint": "https://example-cosmos.documents.azure.com:443/",
+                "database": "policy_rag_db",
+            }
+
+        def call_activity(self, *args, **kwargs):
+            if args and args[0] == "StoreAuditEventActivity":
+                return {"status": "ok"}
+            raise AssertionError(f"Unexpected activity call: {args!r} {kwargs!r}")
+
+    with mock.patch.object(orchestrator, "ConflictAwareRetriever", _FakeRetriever), mock.patch.object(
+        orchestrator.PolicyPurposeValidator, "evaluate", return_value=(True, {"satisfied": True, "matchedRules": ["rule-1"]})
+    ):
+        generator = orchestrator.orchestrator_function(_FakeContext())
+        try:
+            first_yield = next(generator)
+            result = generator.send({"status": "ok"})
+        except StopIteration as stop:
+            if 'result' not in locals():
+                result = stop.value
+
+    assert first_yield == {"status": "ok"}
+    assert captured["sender_query"] == "Fran Fagan"
+    assert captured["cosmos_collection"] == "EnronEmailVectorStore"
+    assert result["status"] == "ok"
+    assert result["outcomeType"] == "count_result"
+    assert result["count"] == 3
+    assert result["result"] == "Fran Fagan sent 3 emails."
+
+
 def test_start_orchestration_rejects_invalid_json():
     _install_azure_stubs()
     sys.modules.pop("function_app", None)
@@ -234,6 +342,63 @@ def test_generate_response_activity_uses_ai_foundry_chat_completion():
     assert "What is the policy outcome?" in captured["body"]["messages"][1]["content"]
 
 
+def test_generate_response_activity_includes_body_field_from_retrieved_documents():
+    _install_azure_stubs()
+    os.environ["AI_FOUNDRY_Endpoint"] = "https://example-foundry.services.ai.azure.com/models"
+    os.environ["AI_FOUNDRY_KEY"] = "test-key"
+    os.environ["AI_FOUNDRY_MODEL"] = "test-model"
+    sys.modules.pop("activities", None)
+    activities = importlib.import_module("activities")
+
+    class _FakeUrlResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return self._payload
+
+    captured = {}
+
+    def _fake_urlopen(request, timeout=60):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        response_body = json.dumps({"choices": [{"message": {"content": "Approved answer"}}]}).encode("utf-8")
+        return _FakeUrlResponse(response_body)
+
+    retrieved = [
+        {
+            "subject": "FW: final ratings",
+            "from": "lynn.blair@enron.com",
+            "to": "sheila.nacey@enron.com",
+            "date": "Mon, 30 Jul 2001 07:05:23 -0700",
+            "body": "FYI. Thanks. Lynn",
+            "similarity_score": 0.4189439595463752,
+        }
+    ]
+
+    with mock.patch.object(activities.urllib.request, "urlopen", side_effect=_fake_urlopen):
+        result = activities.GenerateResponseActivity(
+            {
+                "query_text": "Summarise the relevant privacy review emails",
+                "retrieved": retrieved,
+                "principal": {"role": "privacy-analyst", "declaredIntent": "compliance_review"},
+                "policy_evaluation": {"satisfied": True, "matchedRules": ["rule-1"]},
+                "action": "summarise",
+            }
+        )
+
+    assert result == "Approved answer"
+    prompt = captured["body"]["messages"][1]["content"]
+    assert "FYI. Thanks. Lynn" in prompt
+    assert "from: lynn.blair@enron.com" in prompt
+    assert "subject: FW: final ratings" in prompt
+
+
 def test_build_audit_event_includes_request_policy_and_outcome():
     _install_azure_stubs()
     sys.modules.pop("orchestrator", None)
@@ -241,7 +406,9 @@ def test_build_audit_event_includes_request_policy_and_outcome():
 
     audit_event = orchestrator.build_audit_event(
         transaction_id="11111111-1111-1111-1111-111111111111",
-        timestamp=importlib.import_module("datetime").datetime(2026, 1, 1, 12, 0, 0),
+        start_time=importlib.import_module("datetime").datetime(2026, 1, 1, 12, 0, 0),
+        end_time=importlib.import_module("datetime").datetime(2026, 1, 1, 12, 0, 5),
+        duration_seconds=5.0,
         principal={"userId": "user-1", "role": "privacy-analyst", "declaredIntent": "compliance_review"},
         odrl_policy={"uid": "policy:privacy-analyst"},
         query_text="Summarise the approved content.",
@@ -259,6 +426,9 @@ def test_build_audit_event_includes_request_policy_and_outcome():
 
     assert audit_event["id"] == "11111111-1111-1111-1111-111111111111"
     assert audit_event["transactionId"] == "11111111-1111-1111-1111-111111111111"
+    assert audit_event["startTime"] == "2026-01-01T12:00:00"
+    assert audit_event["endTime"] == "2026-01-01T12:00:05"
+    assert audit_event["durationSeconds"] == 5.0
     assert audit_event["request"]["cosmosCollectionId"] == "EnronEmailVectorStore"
     assert audit_event["odrlPolicy"]["uid"] == "policy:privacy-analyst"
     assert audit_event["policyEvaluation"]["ruleType"] == "Permission"
@@ -266,6 +436,71 @@ def test_build_audit_event_includes_request_policy_and_outcome():
     assert audit_event["policyEvaluation"]["reasoningTrail"] == "allowed"
     assert audit_event["enforcementAction"]["complianceGuardStatus"] == "Passed"
     assert audit_event["outcome"]["result"] == "Approved answer"
+
+
+def test_build_audit_event_preserves_no_results_outcome_type():
+    _install_azure_stubs()
+    sys.modules.pop("orchestrator", None)
+    orchestrator = importlib.import_module("orchestrator")
+
+    audit_event = orchestrator.build_audit_event(
+        transaction_id="33333333-3333-3333-3333-333333333333",
+        start_time=importlib.import_module("datetime").datetime(2026, 1, 1, 12, 0, 0),
+        end_time=importlib.import_module("datetime").datetime(2026, 1, 1, 12, 0, 2),
+        duration_seconds=2.0,
+        principal={"userId": "user-3", "role": "CEO", "declaredIntent": "business_review"},
+        odrl_policy={"uid": "policy:full-access"},
+        query_text="Find any matching content.",
+        query_embedding=[0.4, 0.5, 0.6],
+        action="summarise",
+        cosmos_collection="EnronEmailVectorStore",
+        database_name="policy_rag_db",
+        retrieved=[],
+        eval_detail={"matchedRules": ["policy:full-access"], "satisfied": True, "reasoning": ["allowed"]},
+        allowed=True,
+        guard={"status": "Pass"},
+        enforcement_action_type="Allow",
+        final_payload={
+            "status": "ok",
+            "outcomeType": "no_results",
+            "result": "No relevant context was retrieved for this request.",
+        },
+    )
+
+    assert audit_event["outcome"]["outcomeType"] == "no_results"
+    assert audit_event["outcome"]["status"] == "ok"
+    assert audit_event["enforcementAction"]["complianceGuardStatus"] == "Passed"
+
+
+def test_build_audit_event_includes_timing_fields():
+    _install_azure_stubs()
+    sys.modules.pop("orchestrator", None)
+    orchestrator = importlib.import_module("orchestrator")
+
+    audit_event = orchestrator.build_audit_event(
+        transaction_id="44444444-4444-4444-4444-444444444444",
+        start_time=importlib.import_module("datetime").datetime(2026, 1, 1, 12, 0, 0),
+        end_time=importlib.import_module("datetime").datetime(2026, 1, 1, 12, 0, 3),
+        duration_seconds=3.0,
+        principal={"userId": "user-4", "role": "CEO", "declaredIntent": "business_review"},
+        odrl_policy={"uid": "policy:full-access"},
+        query_text="Find any matching content.",
+        query_embedding=[0.1, 0.2, 0.3],
+        action="summarise",
+        cosmos_collection="EnronEmailVectorStore",
+        database_name="policy_rag_db",
+        retrieved=[],
+        eval_detail={"matchedRules": ["policy:full-access"], "satisfied": True, "reasoning": ["allowed"]},
+        allowed=True,
+        guard={"status": "Pass"},
+        enforcement_action_type="Allow",
+        final_payload={"status": "ok", "outcomeType": "no_results", "result": "No relevant context was retrieved for this request."},
+    )
+
+    assert audit_event["timestamp"] == "2026-01-01T12:00:00"
+    assert audit_event["startTime"] == "2026-01-01T12:00:00"
+    assert audit_event["endTime"] == "2026-01-01T12:00:03"
+    assert audit_event["durationSeconds"] == 3.0
 
 
 def test_store_audit_event_activity_upserts_with_transaction_id_as_item_id():

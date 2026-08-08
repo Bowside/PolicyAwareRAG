@@ -8,10 +8,10 @@ class Principal(BaseModel):
     declaredIntent: str
 
 class PolicyEvaluation(BaseModel):
-    matchedPolicyUid: Optional[str]
-    ruleType: Optional[str]
-    constraintSatisfaction: Dict[str, bool]
-    reasoningTrail: List[str]
+    matchedPolicyUid: Optional[str] = None
+    ruleType: Optional[str] = None
+    constraintSatisfaction: Dict[str, bool] = {}
+    reasoningTrail: List[str] = []
 
 class EnforcementAction(BaseModel):
     actionType: str  # Allow | Partial_Redaction | Deny
@@ -21,6 +21,9 @@ class EnforcementAction(BaseModel):
 class GatewayAuditLogSchema(BaseModel):
     transactionId: str
     timestamp: datetime
+    startTime: datetime
+    endTime: datetime
+    durationSeconds: float
     principal: Principal
     policyEvaluation: PolicyEvaluation
     enforcementAction: EnforcementAction
@@ -30,15 +33,15 @@ class ODRLConstraint(BaseModel):
     purpose: Optional[List[str]] = None
 
 class ODRLRule(BaseModel):
-    uid: Optional[str]
+    uid: Optional[str] = None
     action: List[str]
-    assigner: Optional[str]
-    assignee: Optional[str]
-    constraint: Optional[ODRLConstraint]
+    assigner: Optional[str] = None
+    assignee: Optional[str] = None
+    constraint: Optional[ODRLConstraint] = None
 
 class ODRLPolicy(BaseModel):
-    context: Optional[Any] = Field(..., alias='@context')
-    type: Optional[str]
-    uid: Optional[str]
-    profile: Optional[str]
-    rules: List[ODRLRule]
+    context: Optional[Any] = Field(None, alias='@context')
+    type: Optional[str] = None
+    uid: Optional[str] = None
+    profile: Optional[str] = None
+    rules: List[ODRLRule] = Field(default_factory=list)
