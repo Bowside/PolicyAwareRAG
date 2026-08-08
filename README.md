@@ -133,7 +133,7 @@ For Azure execution:
 2. Confirm the Function App application settings match the deployed resources and secrets in Key Vault.
 3. Deploy the Python function code to the Azure Function App.
 4. Invoke `POST /api/orchestrators/start` with a payload that includes `principal`, `odrl_policy`, `query_embedding`, `action`, and `cosmos_collection`. The function app supplies the Cosmos endpoint and database from application settings.
-5. Use one of the policies in `odrl_policies/` to test a restrictive role, a limited role, or a full-access role.
+5. Use one of the policies in `odrl_policies/` to test a `business-observer`, `customer-support-specialist`, `privacy-compliance-analyst`, or `pii-data-governance-admin` role.
 6. Review Application Insights and Function App logs if the orchestration fails, returns a denied response, or redacts output.
 
 The orchestration function is registered in `function_app.py`, and the activity wrappers keep the current implementations in `orchestrator.py` and `activities.py` intact.

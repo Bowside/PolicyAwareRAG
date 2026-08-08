@@ -1,17 +1,60 @@
 {
   "@context": "https://www.w3.org/ns/odrl.jsonld",
-  "type": "Set",
-  "uid": "policy:no-pii-observer",
-  "profile": "PolicyAwareRAG base access policies",
-  "rules": [
+  "@type": "Set",
+  "uid": "urn:policyaware:policy:business-observer",
+  "profile": "urn:policyaware:profile:pii-access-tier",
+  "permission": [
     {
-      "uid": "rule:no-pii-observer:summary-only",
+      "uid": "urn:policyaware:permission:business-observer:metadata-review",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
       "action": ["summarise", "summarize", "retrieve"],
-      "assigner": "PolicyAwareRAG",
-      "assignee": "no-pii-observer",
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:business-observer",
       "constraint": {
-        "purpose": ["metadata_review", "routing", "triage"]
+        "leftOperand": "purpose",
+        "operator": "eq",
+        "rightOperand": "metadata_review"
       }
+    },
+    {
+      "uid": "urn:policyaware:permission:business-observer:routing",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["summarise", "summarize", "retrieve"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:business-observer",
+      "constraint": {
+        "leftOperand": "purpose",
+        "operator": "eq",
+        "rightOperand": "routing"
+      }
+    },
+    {
+      "uid": "urn:policyaware:permission:business-observer:triage",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["summarise", "summarize", "retrieve"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:business-observer",
+      "constraint": {
+        "leftOperand": "purpose",
+        "operator": "eq",
+        "rightOperand": "triage"
+      }
+    }
+  ],
+  "prohibition": [
+    {
+      "uid": "urn:policyaware:prohibition:business-observer:no-export",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["export"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:business-observer"
+    },
+    {
+      "uid": "urn:policyaware:prohibition:business-observer:no-redact",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["redact"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:business-observer"
     }
   ]
 }

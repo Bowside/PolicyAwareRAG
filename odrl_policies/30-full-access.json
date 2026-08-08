@@ -1,14 +1,15 @@
 {
   "@context": "https://www.w3.org/ns/odrl.jsonld",
-  "type": "Set",
-  "uid": "policy:full-access",
-  "profile": "PolicyAwareRAG base access policies",
-  "rules": [
+  "@type": "Set",
+  "uid": "urn:policyaware:policy:pii-data-governance-admin",
+  "profile": "urn:policyaware:profile:pii-access-tier",
+  "permission": [
     {
-      "uid": "rule:full-access:all-supported-actions",
+      "uid": "urn:policyaware:permission:pii-data-governance-admin:full-access",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
       "action": ["summarise", "summarize", "retrieve", "audit", "redact", "export"],
-      "assigner": "PolicyAwareRAG",
-      "assignee": "full-access"
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:pii-data-governance-admin"
     }
   ]
 }

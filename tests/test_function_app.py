@@ -191,7 +191,7 @@ def test_orchestrator_defaults_missing_collection_to_sample_store():
         def get_input(self):
             return {
                 "principal": {"role": "privacy-analyst", "declaredIntent": "compliance_review"},
-                "odrl_policy": {"rules": [{"uid": "rule-1", "action": ["summarise"]}]},
+                "odrl_policy": {"permission": [{"uid": "rule-1", "action": ["summarise"]}]},
                 "query_text": "Summarise the approved content.",
                 "query_embedding": list(range(16)),
                 "action": "summarise",
@@ -218,8 +218,54 @@ def test_orchestrator_defaults_missing_collection_to_sample_store():
     assert first_yield == {"status": "ok"}
 
     assert captured["cosmos_collection"] == "EnronEmailVectorStore"
+
+
+def test_count_query_does_not_build_embedding():
+    _install_azure_stubs()
+    sys.modules.pop("orchestrator", None)
+    orchestrator = importlib.import_module("orchestrator")
+
+    class _FakeRetriever:
+        def __init__(self, cosmos_endpoint, database_name, cosmos_collection):
+            self.cosmos_endpoint = cosmos_endpoint
+            self.database_name = database_name
+            self.cosmos_collection = cosmos_collection
+
+        def count_by_sender(self, sender):
+            return 7
+
+    class _FakeContext:
+        def get_input(self):
+            return {
+                "principal": {"role": "privacy-analyst", "declaredIntent": "compliance_review"},
+                "odrl_policy": {"permission": [{"uid": "rule-1", "action": ["summarise"]}]},
+                "query_text": "How many emails did Fran Fagan send?",
+                "action": "summarise",
+                "cosmos_endpoint": "https://example-cosmos.documents.azure.com:443/",
+                "database": "policy_rag_db",
+            }
+
+        def call_activity(self, *args, **kwargs):
+            if args and args[0] == "StoreAuditEventActivity":
+                return {"status": "ok"}
+            raise AssertionError(f"Unexpected activity call: {args!r} {kwargs!r}")
+
+    with mock.patch.object(orchestrator, "ConflictAwareRetriever", _FakeRetriever), mock.patch.object(
+        orchestrator, "_build_query_embedding", side_effect=AssertionError("embedding build should be skipped")
+    ), mock.patch.object(
+        orchestrator.PolicyPurposeValidator, "evaluate", return_value=(True, {"satisfied": True, "matchedRules": ["rule-1"]})
+    ):
+        generator = orchestrator.orchestrator_function(_FakeContext())
+        try:
+            first_yield = next(generator)
+            result = generator.send({"status": "ok"})
+        except StopIteration as stop:
+            result = stop.value
+
+    assert first_yield == {"status": "ok"}
     assert result["status"] == "ok"
-    assert result["outcomeType"] == "no_results"
+    assert result["outcomeType"] == "count_result"
+    assert result["count"] == 7
 
 
 def test_orchestrator_counts_sender_queries_without_llm():
@@ -246,7 +292,7 @@ def test_orchestrator_counts_sender_queries_without_llm():
         def get_input(self):
             return {
                 "principal": {"role": "CEO", "declaredIntent": "business_review"},
-                "odrl_policy": {"rules": [{"uid": "rule-1", "action": ["summarise"]}]},
+                "odrl_policy": {"permission": [{"uid": "rule-1", "action": ["summarise"]}]},
                 "query_text": "How many emails did Fran Fagan send?",
                 "query_embedding": list(range(16)),
                 "action": "summarise",

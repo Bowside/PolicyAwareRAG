@@ -150,7 +150,6 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
     principal = input_payload.get("principal", {})
     odrl_policy = input_payload.get("odrl_policy", {})
     query_text = input_payload.get("query_text") or input_payload.get("query") or ""
-    query_embedding = _build_query_embedding(query_text, input_payload.get("query_embedding", []))
     action = input_payload.get("action", "summarise")
     cosmos_endpoint = input_payload.get("cosmos_endpoint")
     database_name = input_payload.get("database", "policy_rag_db")
@@ -161,6 +160,7 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
 
     retrieved = []
     handled_count_query = False
+    query_embedding = []
     count_sender = _extract_sender_from_count_query(query_text)
     if allowed and count_sender:
         retriever = ConflictAwareRetriever(cosmos_endpoint, database_name, cosmos_collection)
@@ -180,6 +180,7 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
         handled_count_query = True
     elif allowed:
         # Retrieval is intentionally broad; policy enforcement happens after the RAG context is assembled.
+        query_embedding = _build_query_embedding(query_text, input_payload.get("query_embedding", []))
         retriever = ConflictAwareRetriever(cosmos_endpoint, database_name, cosmos_collection)
         retrieved = retriever.retrieve(query_embedding, {}, top_k=10)
 

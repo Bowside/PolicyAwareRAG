@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
@@ -30,6 +30,9 @@ class GatewayAuditLogSchema(BaseModel):
     extra: Optional[Dict[str, Any]] = None
 
 class ODRLConstraint(BaseModel):
+    leftOperand: Optional[str] = None
+    operator: Optional[str] = None
+    rightOperand: Optional[Any] = None
     purpose: Optional[List[str]] = None
 
 class ODRLRule(BaseModel):
@@ -37,11 +40,16 @@ class ODRLRule(BaseModel):
     action: List[str]
     assigner: Optional[str] = None
     assignee: Optional[str] = None
-    constraint: Optional[ODRLConstraint] = None
+    target: Optional[str] = None
+    constraint: Optional[Any] = None
 
 class ODRLPolicy(BaseModel):
+    model_config = ConfigDict(validate_by_name=True)
+
     context: Optional[Any] = Field(None, alias='@context')
-    type: Optional[str] = None
+    type: Optional[str] = Field(None, alias='@type')
     uid: Optional[str] = None
     profile: Optional[str] = None
-    rules: List[ODRLRule] = Field(default_factory=list)
+    permission: List[ODRLRule] = Field(default_factory=list)
+    prohibition: List[ODRLRule] = Field(default_factory=list)
+    duty: List[ODRLRule] = Field(default_factory=list)

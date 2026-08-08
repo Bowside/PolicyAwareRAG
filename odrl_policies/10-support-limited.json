@@ -1,17 +1,60 @@
 {
   "@context": "https://www.w3.org/ns/odrl.jsonld",
-  "type": "Set",
-  "uid": "policy:support-limited",
-  "profile": "PolicyAwareRAG base access policies",
-  "rules": [
+  "@type": "Set",
+  "uid": "urn:policyaware:policy:customer-support-specialist",
+  "profile": "urn:policyaware:profile:pii-access-tier",
+  "permission": [
     {
-      "uid": "rule:support-limited:case-handling",
+      "uid": "urn:policyaware:permission:customer-support-specialist:case-management",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
       "action": ["summarise", "summarize", "retrieve", "audit"],
-      "assigner": "PolicyAwareRAG",
-      "assignee": "support-limited",
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:customer-support-specialist",
       "constraint": {
-        "purpose": ["customer_support", "case_management", "incident_triage"]
+        "leftOperand": "purpose",
+        "operator": "eq",
+        "rightOperand": "customer_support"
       }
+    },
+    {
+      "uid": "urn:policyaware:permission:customer-support-specialist:case-routing",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["summarise", "summarize", "retrieve", "audit"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:customer-support-specialist",
+      "constraint": {
+        "leftOperand": "purpose",
+        "operator": "eq",
+        "rightOperand": "case_management"
+      }
+    },
+    {
+      "uid": "urn:policyaware:permission:customer-support-specialist:incident-triage",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["summarise", "summarize", "retrieve", "audit"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:customer-support-specialist",
+      "constraint": {
+        "leftOperand": "purpose",
+        "operator": "eq",
+        "rightOperand": "incident_triage"
+      }
+    }
+  ],
+  "prohibition": [
+    {
+      "uid": "urn:policyaware:prohibition:customer-support-specialist:no-export",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["export"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:customer-support-specialist"
+    },
+    {
+      "uid": "urn:policyaware:prohibition:customer-support-specialist:no-redact",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["redact"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:customer-support-specialist"
     }
   ]
 }
