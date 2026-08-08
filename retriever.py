@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from azure.cosmos import CosmosClient
@@ -50,13 +51,12 @@ class ConflictAwareRetriever:
         
         # Use Cosmos DB's native VectorDistance for similarity scoring
         query = f"""
-            SELECT TOP {top_k} c.id, c.content, c.embedding, c.securityMetadata,
-            VectorDistance(c.embedding, @query_vector) AS similarity_score
+            SELECT TOP {top_k} c.subject, c["from"], c.to, c.date, c.body,
+            VectorDistance(c.vector, @query_vector) AS similarity_score
             FROM c
             {where_clause}
-            ORDER BY VectorDistance(c.embedding, @query_vector)
-        """
-        
+            ORDER BY VectorDistance(c.vector, @query_vector)
+        """        
         try:
             items = list(self.container.query_items(
                 query=query, 
@@ -67,6 +67,55 @@ class ConflictAwareRetriever:
         except Exception as e:
             import logging
             logging.error(f"Cosmos DB vector search failed: {e}")
+            logging.debug(f"Query: {query}")
+            logging.debug(f"Parameters count: {len(params)}")
+            raise
+
+    def count_by_sender(self, sender_query: str) -> int:
+        """Count documents whose sender field matches the provided sender text.
+
+        Uses a case-insensitive containment check so human names such as
+        "Fran Fagan" can match sender values like "fran.fagan@enron.com".
+        """
+        normalized_sender = re.sub(r"\s+", " ", (sender_query or "").strip())
+        if not normalized_sender:
+            return 0
+
+        sender_terms = [term for term in re.split(r"[\s,]+", normalized_sender) if term]
+        sender_name_match = normalized_sender.lower()
+        sender_local_part = ".".join(sender_terms[:2]).lower() if len(sender_terms) >= 2 else sender_name_match
+        sender_variants = []
+        for candidate in (sender_local_part, sender_name_match):
+            candidate = candidate.strip()
+            if candidate and candidate not in sender_variants:
+                sender_variants.append(candidate)
+
+        query = """
+            SELECT VALUE COUNT(1)
+            FROM c
+            WHERE CONTAINS(LOWER(c["from"]), @sender_local)
+               OR CONTAINS(LOWER(c["from"]), @sender_name)
+        """
+        params = [
+            {"name": "@sender_local", "value": sender_variants[0]},
+            {"name": "@sender_name", "value": sender_variants[1] if len(sender_variants) > 1 else sender_variants[0]},
+        ]
+
+        try:
+            results = list(
+                self.container.query_items(
+                    query=query,
+                    parameters=params,
+                    enable_cross_partition_query=True,
+                )
+            )
+            if not results:
+                return 0
+            return int(results[0])
+        except Exception as e:
+            import logging
+
+            logging.error(f"Cosmos DB sender count failed: {e}")
             logging.debug(f"Query: {query}")
             logging.debug(f"Parameters count: {len(params)}")
             raise

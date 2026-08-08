@@ -38,10 +38,26 @@ def _get_ai_foundry_config() -> tuple[str, str, str]:
 def _build_context_snippets(retrieved: list[dict]) -> str:
     snippets = []
     for item in retrieved:
-        content = (item.get("content") or "").strip()
-        if not content:
+        content = (item.get("content") or item.get("body") or "").strip()
+        if content:
+            header_parts = []
+            for field_name in ("subject", "from", "to", "date"):
+                value = (item.get(field_name) or "").strip()
+                if value:
+                    header_parts.append(f"{field_name}: {value}")
+
+            header = "; ".join(header_parts)
+            prefix = f"[{item.get('id', 'chunk')}]"
+            snippets.append(f"{prefix} {header} {content}".strip())
             continue
-        snippets.append(f"[{item.get('id', 'chunk')}] {content}")
+
+        fallback_fields = []
+        for field_name, value in item.items():
+            if value in (None, "", [], {}):
+                continue
+            fallback_fields.append(f"{field_name}: {value}")
+        if fallback_fields:
+            snippets.append(f"[{item.get('id', 'chunk')}] " + " | ".join(fallback_fields))
     return "\n\n".join(snippets) if snippets else "No retrieved context was available."
 
 

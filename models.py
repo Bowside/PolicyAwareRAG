@@ -21,6 +21,9 @@ class EnforcementAction(BaseModel):
 class GatewayAuditLogSchema(BaseModel):
     transactionId: str
     timestamp: datetime
+    startTime: datetime
+    endTime: datetime
+    durationSeconds: float
     principal: Principal
     policyEvaluation: PolicyEvaluation
     enforcementAction: EnforcementAction
