@@ -22,10 +22,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Setup Python version
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -36,16 +36,33 @@ jobs:
 
       # Optional: Add step to run tests here
 
-      - name: Install Azure Functions Core Tools
+      - name: Zip artifact for deployment (respect .funcignore)
         run: |
-          npm install -g azure-functions-core-tools@4 --unsafe-perm=true
-
-      - name: Pack artifact for deployment (Core Tools, respects .funcignore)
-        run: |
-          func pack -o release.zip
+          set -euo pipefail
+          EXCLUDE_ARGS=()
+          if [ -f .funcignore ]; then
+            while IFS= read -r line || [ -n "$line" ]; do
+              # strip comments and surrounding whitespace
+              line="${line%%#*}"
+              line="$(echo -e "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+              if [ -z "$line" ]; then
+                continue
+              fi
+              # if the pattern ends with a slash, match everything under that dir
+              if echo "$line" | grep -q '/$'; then
+                patt="${line%/}/*"
+              else
+                patt="$line"
+              fi
+              EXCLUDE_ARGS+=("-x" "$patt")
+            done < .funcignore
+          fi
+          # always exclude git metadata and the zip we're about to create
+          EXCLUDE_ARGS+=("-x" "*.git*" "-x" "release.zip")
+          zip -r release.zip . "${EXCLUDE_ARGS[@]}"
 
       - name: Upload artifact for deployment job
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: python-app
           path: release.zip
