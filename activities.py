@@ -167,7 +167,12 @@ def GenerateResponseActivity(req: dict) -> str:
         f"Policy evaluation: {json.dumps(policy_eval, ensure_ascii=False)}\n\n"
         f"Retrieved context:\n{_build_context_snippets(retrieved)}"
     )
-    return _chat_with_ai_foundry(system_prompt, user_prompt)
+
+    try:
+        return _chat_with_ai_foundry(system_prompt, user_prompt)
+    except Exception as exc:
+        logging.exception("GenerateResponseActivity failed: %s", exc)
+        return "The response service is temporarily unavailable. Please try again later."
 
 def GenerateRedactedResponseActivity(req: dict) -> str:
     """Build a redacted response from the retrieved chunks.
@@ -200,7 +205,12 @@ def GenerateRedactedResponseActivity(req: dict) -> str:
         f"User request: {query_text}\n\n"
         f"Redacted excerpts:\n{_build_context_snippets(redacted_chunks)}"
     )
-    return _chat_with_ai_foundry(system_prompt, user_prompt)
+
+    try:
+        return _chat_with_ai_foundry(system_prompt, user_prompt)
+    except Exception as exc:
+        logging.exception("GenerateRedactedResponseActivity failed: %s", exc)
+        return "The response service is temporarily unavailable. Please try again later."
 
 def StoreAuditEventActivity(event: dict) -> dict:
     """Persist an audit event to the Cosmos DB audit container.
