@@ -1,6 +1,18 @@
 import activities
 
 
+def test_build_context_snippets_uses_multiple_text_fields():
+    retrieved = [
+        {"id": "chunk-1", "text": "This is the actual retrieved content.", "subject": "Quarterly review"},
+        {"id": "chunk-2", "body": "Another chunk with policy context.", "from": "ops@example.com"},
+    ]
+
+    rendered = activities._build_context_snippets(retrieved)
+
+    assert "This is the actual retrieved content." in rendered
+    assert "Another chunk with policy context." in rendered
+
+
 def test_generate_response_activity_returns_fallback_when_ai_call_fails(monkeypatch):
     def raise_error(*args, **kwargs):
         raise RuntimeError("AI service unavailable")
@@ -17,7 +29,8 @@ def test_generate_response_activity_returns_fallback_when_ai_call_fails(monkeypa
         }
     )
 
-    assert result == "The response service is temporarily unavailable. Please try again later."
+    assert "temporarily unavailable" in result
+    assert "AI service unavailable" in result
 
 
 def test_generate_redacted_response_activity_returns_fallback_when_ai_call_fails(monkeypatch):
@@ -33,4 +46,5 @@ def test_generate_redacted_response_activity_returns_fallback_when_ai_call_fails
         }
     )
 
-    assert result == "The response service is temporarily unavailable. Please try again later."
+    assert "temporarily unavailable" in result
+    assert "AI service unavailable" in result

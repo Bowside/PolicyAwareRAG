@@ -6,21 +6,32 @@ import urllib.request
 
 from azure.cosmos import CosmosClient
 
+COSMOS_ENDPOINT = os.environ.get("COSMOSDB_ENDPOINT")
+COSMOS_DATABASE = os.environ.get("COSMOSDB_DATABASE")
+COSMOS_KEY = os.environ.get("COSMOSDB_KEY")
 
-def _get_env(*names: str) -> str | None:
-    """Return the first populated environment variable from a list.
+AI_FOUNDRY_ENDPOINT = os.environ.get("AI_FOUNDRY_ENDPOINT")
+AI_FOUNDRY_KEY = os.environ.get("AI_FOUNDRY_KEY")
+AI_FOUNDRY_MODEL = os.environ.get("AI_FOUNDRY_MODEL")
 
-    Args:
-        names: Candidate environment variable names in priority order.
+def _get_cosmos_config() -> tuple[str, str, str]:
+    """Load Cosmos connection settings from the environment."""
+    endpoint = COSMOS_ENDPOINT
+    database = COSMOS_DATABASE
+    key = COSMOS_KEY
 
-    Returns:
-        The first non-empty environment variable value, or ``None``.
-    """
-    for name in names:
-        value = os.environ.get(name)
-        if value:
-            return value
-    return None
+    missing = [
+        name 
+        for name, value in (
+            ("COSMOSDB_ENDPOINT", endpoint),
+            ("COSMOSDB_DATABASE", database),
+            ("COSMOSDB_KEY", key)
+        ) if not value
+    ]
+    if missing:
+        raise RuntimeError(f"Missing Cosmos configuration: {', '.join(missing)}")
+
+    return endpoint, database, key
 
 
 def _get_ai_foundry_config() -> tuple[str, str, str]:
@@ -32,14 +43,14 @@ def _get_ai_foundry_config() -> tuple[str, str, str]:
     Raises:
         RuntimeError: If any required setting is missing.
     """
-    endpoint = _get_env("AI_FOUNDRY_Endpoint", "AI_FOUNDRY_ENDPOINT")
-    api_key = _get_env("AI_FOUNDRY_KEY")
-    model = _get_env("AI_FOUNDRY_MODEL")
+    endpoint = AI_FOUNDRY_ENDPOINT
+    api_key = AI_FOUNDRY_KEY
+    model = AI_FOUNDRY_MODEL
 
     missing = [
         name
         for name, value in (
-            ("AI_FOUNDRY_Endpoint", endpoint),
+            ("AI_FOUNDRY_ENDPOINT", endpoint),
             ("AI_FOUNDRY_KEY", api_key),
             ("AI_FOUNDRY_MODEL", model),
         )
@@ -167,12 +178,11 @@ def GenerateResponseActivity(req: dict) -> str:
         f"Policy evaluation: {json.dumps(policy_eval, ensure_ascii=False)}\n\n"
         f"Retrieved context:\n{_build_context_snippets(retrieved)}"
     )
-
     try:
         return _chat_with_ai_foundry(system_prompt, user_prompt)
     except Exception as exc:
         logging.exception("GenerateResponseActivity failed: %s", exc)
-        return "The response service is temporarily unavailable. Please try again later."
+        return f"The response service is temporarily unavailable. Details: {exc}"
 
 def GenerateRedactedResponseActivity(req: dict) -> str:
     """Build a redacted response from the retrieved chunks.
@@ -205,12 +215,11 @@ def GenerateRedactedResponseActivity(req: dict) -> str:
         f"User request: {query_text}\n\n"
         f"Redacted excerpts:\n{_build_context_snippets(redacted_chunks)}"
     )
-
     try:
         return _chat_with_ai_foundry(system_prompt, user_prompt)
     except Exception as exc:
         logging.exception("GenerateRedactedResponseActivity failed: %s", exc)
-        return "The response service is temporarily unavailable. Please try again later."
+        return f"The response service is temporarily unavailable. Details: {exc}"
 
 def StoreAuditEventActivity(event: dict) -> dict:
     """Persist an audit event to the Cosmos DB audit container.
@@ -222,15 +231,9 @@ def StoreAuditEventActivity(event: dict) -> dict:
         A status dictionary indicating success, missing configuration, or error details.
     """
     try:
-        credential = os.environ.get("COSMOS_KEY")
-        if not credential:
-            return {"status": "missing_key"}
-
-        endpoint = event.get("cosmos_endpoint")
-        if not endpoint:
-            return {"status": "missing_endpoint"}
+        endpoint, database, credential = _get_cosmos_config()
         client = CosmosClient(url=endpoint, credential=credential)
-        db = client.get_database_client(event.get("database", "policy_rag_db"))
+        db = client.get_database_client(database)
         container = db.get_container_client("AuditStorage")
         event_doc = event.copy()
         event_doc.setdefault("id", event_doc.get("transactionId"))

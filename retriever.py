@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 from typing import Any, Dict, List, Optional
@@ -5,16 +6,23 @@ from typing import Any, Dict, List, Optional
 from azure.cosmos import CosmosClient
 
 class ConflictAwareRetriever:
-    def __init__(self, cosmos_endpoint: str, database_name: str, container_name: str, cosmos_key: Optional[str] = None):
+    def __init__(self, container_name: Optional[str] = None):
         """Create a retriever backed by a Cosmos DB container.
 
         Args:
-            cosmos_endpoint: Cosmos DB account endpoint URI.
-            database_name: Database name containing the vector container.
-            container_name: Container name used for retrieval.
+            cosmos_endpoint: Cosmos DB account endpoint URI. Falls back to the COSMOSDB_ENDPOINT environment variable.
+            database_name: Database name containing the vector container. Falls back to the COSMOSDB_DATABASE environment variable.
+            container_name: Container name used for retrieval. Falls back to EnronEmailVectorStore.
             cosmos_key: Cosmos DB account key. Falls back to the COSMOS_KEY environment variable.
         """
-        credential = cosmos_key or os.environ.get("COSMOS_KEY")
+        cosmos_endpoint = os.environ.get("COSMOSDB_ENDPOINT")
+        database_name = os.environ.get("COSMOSDB_DATABASE")
+        container_name = container_name or os.environ.get("COSMOSDB_ENRON_COLLECTION")
+        credential = os.environ.get("COSMOSDB_KEY")
+        if not cosmos_endpoint:
+            raise ValueError("COSMOSDB_ENDPOINT must be provided to initialize the Cosmos client.")
+        if not database_name:
+            raise ValueError("COSMOSDB_DATABASE must be provided to initialize the Cosmos client.")
         if not credential:
             raise ValueError("COSMOS_KEY must be provided to initialize the Cosmos client.")
 
@@ -65,7 +73,6 @@ class ConflictAwareRetriever:
             ))
             return items
         except Exception as e:
-            import logging
             logging.error(f"Cosmos DB vector search failed: {e}")
             logging.debug(f"Query: {query}")
             logging.debug(f"Parameters count: {len(params)}")

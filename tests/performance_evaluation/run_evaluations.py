@@ -14,7 +14,7 @@ import time
 import uuid
 from pathlib import Path
 from random import shuffle
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 # For function app testing
@@ -297,7 +297,7 @@ async def _post_prompt(session, prompt_obj, baseline_latency):
 
     record = {
         "transaction_id": transaction_id,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "prompt": prompt_obj,
         "expected_outcome": prompt_obj.get("expected_outcome"),
         "response": body,

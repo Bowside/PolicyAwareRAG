@@ -5,7 +5,7 @@ from policy_validator import PolicyPurposeValidator
 from retriever import ConflictAwareRetriever
 from compliance_guard import compliance_guard
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 import re
 
@@ -25,8 +25,7 @@ def _build_query_embedding(query_text: str, query_embedding: list) -> list:
 
     try:
         from sentence_transformers import SentenceTransformer
-
-        model_name = os.environ.get("EMBED_MODEL", "all-MiniLM-L6-v2")
+        model_name = os.environ.get("EMBEDDING_MODEL")
         model = SentenceTransformer(model_name)
         embedding = model.encode([query_text or ""], normalize_embeddings=False)[0]
         return embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
@@ -80,7 +79,6 @@ def build_audit_event(
     query_embedding: list,
     action: str,
     cosmos_collection: str,
-    database_name: str,
     retrieved: list,
     eval_detail: dict,
     allowed: bool,
@@ -103,7 +101,6 @@ def build_audit_event(
         query_embedding: Embedding used for retrieval.
         action: Requested action.
         cosmos_collection: Cosmos DB container name.
-        database_name: Cosmos DB database name.
         retrieved: Retrieved chunks used by the orchestration.
         eval_detail: Policy evaluation detail record.
         allowed: Whether the policy allowed the request.
@@ -138,7 +135,6 @@ def build_audit_event(
             "action": action,
             "securityFilters": security_filters or {},
             "cosmosCollectionId": cosmos_collection,
-            "database": database_name,
         },
         "odrlPolicy": odrl_policy,
         "policyEvaluation": {
@@ -236,128 +232,136 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
     Returns:
         The final orchestration payload describing allow, deny, or redaction outcomes.
     """
-    input_payload = context.get_input()
+    input_payload = context.get_input() or {}
     transaction_id = str(uuid.uuid4())
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
 
     principal = input_payload.get("principal", {})
     odrl_policy = input_payload.get("odrl_policy", {})
     query_text = input_payload.get("query_text") or input_payload.get("query") or ""
     action = input_payload.get("action", "summarise")
-    cosmos_endpoint = input_payload.get("cosmos_endpoint")
-    database_name = input_payload.get("database", "policy_rag_db")
     cosmos_collection = input_payload.get("cosmos_collection", "EnronEmailVectorStore")
 
     pv = PolicyPurposeValidator(odrl_policy)
     allowed, eval_detail = pv.evaluate(principal.get("role",""), principal.get("declaredIntent",""), action)
-    security_filters = pv.derive_security_filters(principal.get("role", ""), principal.get("declaredIntent", ""), action) if allowed else {}
-
     retrieved = []
     handled_count_query = False
     query_embedding = []
     decision_graph = {"decision": "Allow", "reasoning": {"signals": [], "tallies": {"deny": 0, "redact": 0, "allow": 0}}}
-    count_sender = _extract_sender_from_count_query(query_text)
-    if allowed and count_sender:
-        retriever = ConflictAwareRetriever(cosmos_endpoint, database_name, cosmos_collection)
-        retrieved_count = retriever.count_by_sender(count_sender, security_filters=security_filters)
-        sender_label = _format_sender_label(count_sender)
-
-        generated = f"{sender_label} sent {retrieved_count} email{'s' if retrieved_count != 1 else ''}."
-        guard = {"status": "Pass", "action": "Release", "findings": []}
-        enforcement_action_type = "Allow"
-        final_payload = {
-            "status": "ok",
-            "outcomeType": "count_result",
-            "result": generated,
-            "count": retrieved_count,
-            "subject": sender_label,
-        }
-        handled_count_query = True
-    elif allowed:
-        # Retrieval is intentionally broad; policy enforcement happens after the RAG context is assembled.
-        query_embedding = _build_query_embedding(query_text, input_payload.get("query_embedding", []))
-        retriever = ConflictAwareRetriever(cosmos_endpoint, database_name, cosmos_collection)
-        retrieved = retriever.retrieve(query_embedding, security_filters, top_k=10)
-        decision_graph = _evaluate_multi_agent_graph(retrieved, eval_detail)
+    guard = {"status": "NotRun", "action": "Block", "findings": []}
+    enforcement_action_type = "Deny"
+    final_payload = {"status": "denied", "result": "Request denied due to policy restrictions."}
 
     if not allowed:
         generated = "Request denied due to policy restrictions."
-        guard = {"status": "Pass", "action": "Release", "findings": []}
-        enforcement_action_type = "Deny"
-        final_payload = {"status": "denied", "reason": guard["findings"], "result": generated}
-    elif handled_count_query:
-        pass
-    elif not retrieved:
-        generated = "No relevant context was retrieved for this request."
-        guard = {"status": "Pass", "action": "Release", "findings": []}
-        enforcement_action_type = "Allow"
-        final_payload = _build_no_results_payload()
-    elif decision_graph.get("decision") == "Deny":
-        generated = "Request denied due to policy restrictions."
-        guard = {"status": "Pass", "action": "Release", "findings": []}
+        guard = {"status": "NotRun", "action": "Block", "findings": ["policy_validator_declined"]}
         enforcement_action_type = "Deny"
         final_payload = {
             "status": "denied",
-            "reason": decision_graph.get("reasoning", {}),
+            "reason": eval_detail.get("reasoning", []),
             "result": generated,
-            "decisionGraph": decision_graph,
+            "policyEvaluation": eval_detail,
         }
     else:
-        if decision_graph.get("decision") == "Partial_Redaction":
-            enforcement_action_type = "Partial_Redaction"
-            generated = yield context.call_activity(
-                "GenerateRedactedResponseActivity",
-                {
-                    "query_text": query_text,
-                    "retrieved": retrieved,
-                    "principal": principal,
-                    "policy_evaluation": eval_detail,
-                    "action": action,
-                },
-            )
-        else:
+        count_sender = _extract_sender_from_count_query(query_text)
+        if count_sender:
+            retriever = ConflictAwareRetriever(container_name=cosmos_collection)
+            retrieved_count = retriever.count_by_sender(count_sender)
+            sender_label = _format_sender_label(count_sender)
+
+            generated = f"{sender_label} sent {retrieved_count} email{'s' if retrieved_count != 1 else ''}."
+            guard = {"status": "Pass", "action": "Release", "findings": []}
             enforcement_action_type = "Allow"
-            generated = yield context.call_activity(
-                "GenerateResponseActivity",
-                {
-                    "query_text": query_text,
-                    "query_embedding": query_embedding,
-                    "retrieved": retrieved,
-                    "principal": principal,
-                    "policy_evaluation": eval_detail,
-                    "action": action,
-                },
-            )
-
-        guard = compliance_guard(generated, retrieved)
-        if guard["status"] == "Fail":
-            logging.warning("Compliance guard blocked generated response: %s", guard["findings"])
-            generated = yield context.call_activity(
-                "GenerateRedactedResponseActivity",
-                {
-                    "query_text": query_text,
-                    "retrieved": retrieved,
-                    "principal": principal,
-                    "policy_evaluation": eval_detail,
-                    "action": action,
-                },
-            )
-            redacted_guard = compliance_guard(generated, retrieved)
-            if redacted_guard["status"] == "Pass":
-                enforcement_action_type = "Partial_Redaction"
-            else:
-                enforcement_action_type = "Deny"
-            guard = redacted_guard
-
-        if enforcement_action_type == "Allow" and guard["status"] == "Fail":
-            enforcement_action_type = "Deny"
-
-        if guard["status"] == "Fail":
-            final_payload = {"status": "denied", "reason": guard["findings"], "result": generated}
+            final_payload = {
+                "status": "ok",
+                "outcomeType": "count_result",
+                "result": generated,
+                "count": retrieved_count,
+                "subject": sender_label,
+                "retrieved": [],
+            }
+            handled_count_query = True
         else:
-            final_payload = {"status": "ok", "result": generated, "decisionGraph": decision_graph}
+            # Retrieval is intentionally broad; policy enforcement happens before the RAG context is assembled.
+            query_embedding = _build_query_embedding(query_text, input_payload.get("query_embedding", []))
+            retriever = ConflictAwareRetriever(container_name=cosmos_collection)
+            retrieved = retriever.retrieve(query_embedding, {}, top_k=10)
+            decision_graph = _evaluate_multi_agent_graph(retrieved, eval_detail)
 
-    end_time = datetime.utcnow()
+        if handled_count_query:
+            pass
+        elif not retrieved:
+            generated = "No relevant context was retrieved for this request."
+            guard = {"status": "Pass", "action": "Release", "findings": []}
+            enforcement_action_type = "Allow"
+            final_payload = _build_no_results_payload()
+            final_payload["retrieved"] = []
+        elif decision_graph.get("decision") == "Deny":
+            generated = "Request denied due to policy restrictions."
+            guard = {"status": "Pass", "action": "Release", "findings": []}
+            enforcement_action_type = "Deny"
+            final_payload = {
+                "status": "denied",
+                "reason": decision_graph.get("reasoning", {}),
+                "result": generated,
+                "decisionGraph": decision_graph,
+            }
+        else:
+            if decision_graph.get("decision") == "Partial_Redaction":
+                enforcement_action_type = "Partial_Redaction"
+                generated = yield context.call_activity(
+                    "GenerateRedactedResponseActivity",
+                    {
+                        "query_text": query_text,
+                        "retrieved": retrieved,
+                        "principal": principal,
+                        "policy_evaluation": eval_detail,
+                        "action": action,
+                    },
+                )
+            else:
+                enforcement_action_type = "Allow"
+                generated = yield context.call_activity(
+                    "GenerateResponseActivity",
+                    {
+                        "query_text": query_text,
+                        "query_embedding": query_embedding,
+                        "retrieved": retrieved,
+                        "principal": principal,
+                        "policy_evaluation": eval_detail,
+                        "action": action,
+                    },
+                )
+
+            guard = compliance_guard(generated, retrieved)
+            if guard["status"] == "Fail":
+                logging.warning("Compliance guard blocked generated response: %s", guard["findings"])
+                generated = yield context.call_activity(
+                    "GenerateRedactedResponseActivity",
+                    {
+                        "query_text": query_text,
+                        "retrieved": retrieved,
+                        "principal": principal,
+                        "policy_evaluation": eval_detail,
+                        "action": action,
+                    },
+                )
+                redacted_guard = compliance_guard(generated, retrieved)
+                if redacted_guard["status"] == "Pass":
+                    enforcement_action_type = "Partial_Redaction"
+                else:
+                    enforcement_action_type = "Deny"
+                guard = redacted_guard
+
+            if enforcement_action_type == "Allow" and guard["status"] == "Fail":
+                enforcement_action_type = "Deny"
+
+            if guard["status"] == "Fail":
+                final_payload = {"status": "denied", "reason": guard["findings"], "result": generated}
+            else:
+                final_payload = {"status": "ok", "result": generated, "decisionGraph": decision_graph, "retrieved": retrieved}
+
+    end_time = datetime.now(timezone.utc)
     duration_seconds = (end_time - start_time).total_seconds()
 
     audit_event = build_audit_event(
@@ -370,9 +374,7 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
         query_text=query_text,
         query_embedding=query_embedding,
         action=action,
-        security_filters=security_filters,
         cosmos_collection=cosmos_collection,
-        database_name=database_name,
         retrieved=retrieved,
         eval_detail=eval_detail,
         allowed=allowed,
@@ -381,9 +383,6 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
         final_payload=final_payload,
         decision_graph=decision_graph,
     )
-    # Include Cosmos connection info so StoreAuditEventActivity can persist the event
-    audit_event["cosmos_endpoint"] = cosmos_endpoint
-    audit_event["database"] = database_name
     store_result = yield context.call_activity("StoreAuditEventActivity", audit_event)
     if isinstance(store_result, dict) and store_result.get("status") != "ok":
         logging.warning("StoreAuditEventActivity returned non-ok status: %s", store_result)

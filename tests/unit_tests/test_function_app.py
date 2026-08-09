@@ -165,8 +165,8 @@ def _install_azure_stubs():
 def test_start_orchestration_returns_check_status_response():
 	"""Verify the start endpoint returns the durable status response."""
 	_install_azure_stubs()
-	os.environ["COSMOS_DB_ENDPOINT"] = "https://example-cosmos.documents.azure.com:443/"
-	os.environ["COSMOS_DB_DATABASE"] = "policy_rag_db"
+	os.environ["COSMOSDB_ENDPOINT"] = "https://example-cosmos.documents.azure.com:443/"
+	os.environ["COSMOSDB_DATABASE"] = "policy_rag_db"
 	sys.modules.pop("function_app", None)
 	function_app = importlib.import_module("function_app")
 
@@ -177,7 +177,36 @@ def test_start_orchestration_returns_check_status_response():
 
 	assert response == {"instanceId": "instance-123", "method": "POST"}
 	assert client.started[0] == "orchestrator"
-	assert client.started[2]["cosmos_endpoint"] == "https://example-cosmos.documents.azure.com:443/"
-	assert client.started[2]["database"] == "policy_rag_db"
+	assert "cosmos_endpoint" not in client.started[2]
+	assert "cosmos_key" not in client.started[2]
+	assert "database" not in client.started[2]
+
+
+def test_start_orchestration_accepts_notebook_style_payload():
+	"""Verify the entrypoint still forwards the notebook-style request payload intact."""
+	_install_azure_stubs()
+	os.environ["COSMOSDB_ENDPOINT"] = "https://example-cosmos.documents.azure.com:443/"
+	sys.modules.pop("function_app", None)
+	function_app = importlib.import_module("function_app")
+
+	client = _FakeDurableClient()
+	request = _FakeRequest({
+		"principal": {
+			"userId": "notebook-user",
+			"role": "privacy-compliance-analyst",
+			"declaredIntent": "compliance_review",
+		},
+		"query_text": "Summarise the relevant privacy review emails",
+		"action": "summarise",
+		"odrl_policy": {"uid": "policy-test"},
+	})
+
+	response = importlib.import_module("asyncio").run(function_app.start_orchestration(request, client))
+
+	assert response == {"instanceId": "instance-123", "method": "POST"}
+	assert client.started[2]["principal"]["role"] == "privacy-compliance-analyst"
+	assert client.started[2]["query_text"] == "Summarise the relevant privacy review emails"
+	assert client.started[2]["action"] == "summarise"
+	assert client.started[2]["odrl_policy"]["uid"] == "policy-test"
 
 # Rest of tests unchanged — copied from original tests/test_function_app.py
