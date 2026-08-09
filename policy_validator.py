@@ -27,12 +27,25 @@ class PolicyPurposeValidator:
             raise ValueError(f"Invalid ODRL policy: {e}")
 
     def _rule_groups(self):
+        """Return the policy's permission and prohibition groups.
+
+        Returns:
+            A tuple of ``(permissions, prohibitions)`` lists.
+        """
         permissions = self.policy.permission or []
         prohibitions = self.policy.prohibition or []
         return permissions, prohibitions
 
     @staticmethod
     def _rule_constraints(rule):
+        """Normalize a rule's constraints into a list.
+
+        Args:
+            rule: ODRL rule object to inspect.
+
+        Returns:
+            A list of constraint objects, or an empty list.
+        """
         constraints = rule.constraint
         if constraints is None:
             return []
@@ -42,6 +55,14 @@ class PolicyPurposeValidator:
 
     @staticmethod
     def _constraint_purposes(constraint):
+        """Extract purpose values from a normalized ODRL constraint.
+
+        Args:
+            constraint: Constraint object or dictionary to inspect.
+
+        Returns:
+            A list of purpose strings extracted from the constraint.
+        """
         if not isinstance(constraint, dict):
             return []
 
@@ -61,6 +82,15 @@ class PolicyPurposeValidator:
         return purposes
 
     def _constraint_allows(self, rule, declared_intent: str) -> Tuple[bool, str]:
+        """Check whether a rule's purpose constraint allows the declared intent.
+
+        Args:
+            rule: ODRL rule being evaluated.
+            declared_intent: Intent declared by the principal.
+
+        Returns:
+            A tuple of ``(allowed, explanation)``.
+        """
         constraints = self._rule_constraints(rule)
         if not constraints:
             return True, "no purpose constraint -> permissive"
@@ -79,6 +109,14 @@ class PolicyPurposeValidator:
 
     @staticmethod
     def _canonical_role(value: str | None) -> str:
+        """Normalize a role IRI or alias to the canonical role token.
+
+        Args:
+            value: Raw role value from the policy or principal.
+
+        Returns:
+            The normalized role token.
+        """
         if not value:
             return ""
 
@@ -99,7 +137,90 @@ class PolicyPurposeValidator:
         }
         return aliases.get(normalized, normalized)
 
+    @staticmethod
+    def _normalize_policy_value(value: str | None) -> str:
+        """Normalize a policy IRI or token to its terminal segment.
+
+        Args:
+            value: Raw policy value.
+
+        Returns:
+            The normalized terminal token.
+        """
+        if not value:
+            return ""
+
+        normalized = value.strip().rstrip("/ ")
+        for separator in ("#", "/", ":"):
+            if separator in normalized:
+                normalized = normalized.rsplit(separator, 1)[-1]
+
+        return normalized
+
+    def _permission_security_filters(self, rule, principal_role: str, declared_intent: str, action: str) -> dict:
+        """Derive Cosmos DB security filters from a matching permission rule.
+
+        Args:
+            rule: Candidate permission rule.
+            principal_role: Declared role of the principal.
+            declared_intent: Declared intent of the principal.
+            action: Requested action.
+
+        Returns:
+            A dictionary of policy-derived security filters, or an empty dict.
+        """
+        role_allowed, _ = self._role_allows(rule, principal_role)
+        if not role_allowed:
+            return {}
+
+        allowed, _ = self._constraint_allows(rule, declared_intent)
+        if not allowed:
+            return {}
+
+        if action.lower() not in [candidate.lower() for candidate in rule.action]:
+            return {}
+
+        filters = {
+            "policyUid": self._normalize_policy_value(self.policy.uid),
+            "policyRole": self._canonical_role(rule.assignee or principal_role),
+            "policyTarget": self._normalize_policy_value(rule.target),
+            "policyAction": action.lower(),
+        }
+
+        allowed_purposes = []
+        for constraint in self._rule_constraints(rule):
+            allowed_purposes.extend(self._constraint_purposes(constraint))
+
+        matched_purpose = next((purpose for purpose in allowed_purposes if purpose.lower() == declared_intent.lower()), "")
+        if not matched_purpose and allowed_purposes:
+            matched_purpose = allowed_purposes[0]
+        if matched_purpose:
+            filters["policyPurpose"] = matched_purpose
+
+        if not filters["policyTarget"]:
+            filters.pop("policyTarget")
+
+        return {key: value for key, value in filters.items() if value}
+
+    def derive_security_filters(self, principal_role: str, declared_intent: str, action: str) -> dict:
+        """Derive Cosmos security metadata filters from the first matching permission rule."""
+        permissions, _ = self._rule_groups()
+        for rule in permissions:
+            filters = self._permission_security_filters(rule, principal_role, declared_intent, action)
+            if filters:
+                return filters
+        return {}
+
     def _role_allows(self, rule, principal_role: str) -> Tuple[bool, str]:
+        """Check whether the principal role matches the rule assignee.
+
+        Args:
+            rule: ODRL rule being evaluated.
+            principal_role: Declared role of the principal.
+
+        Returns:
+            A tuple of ``(allowed, explanation)``.
+        """
         if not getattr(rule, "assignee", None):
             return True, "no assignee constraint -> permissive"
 

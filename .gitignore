@@ -43,3 +43,5 @@ Thumbs.db
 enron_mail_20150507.tar.gz
 .python_packages
 
+# Test outputs
+tests/performance_evaluation/evaluation_results.json

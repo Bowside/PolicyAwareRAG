@@ -8,6 +8,14 @@ from azure.cosmos import CosmosClient
 
 
 def _get_env(*names: str) -> str | None:
+    """Return the first populated environment variable from a list.
+
+    Args:
+        names: Candidate environment variable names in priority order.
+
+    Returns:
+        The first non-empty environment variable value, or ``None``.
+    """
     for name in names:
         value = os.environ.get(name)
         if value:
@@ -16,6 +24,14 @@ def _get_env(*names: str) -> str | None:
 
 
 def _get_ai_foundry_config() -> tuple[str, str, str]:
+    """Load the AI Foundry endpoint, key, and model from the environment.
+
+    Returns:
+        A tuple of ``(endpoint, api_key, model)`` values.
+
+    Raises:
+        RuntimeError: If any required setting is missing.
+    """
     endpoint = _get_env("AI_FOUNDRY_Endpoint", "AI_FOUNDRY_ENDPOINT")
     api_key = _get_env("AI_FOUNDRY_KEY")
     model = _get_env("AI_FOUNDRY_MODEL")
@@ -36,6 +52,14 @@ def _get_ai_foundry_config() -> tuple[str, str, str]:
 
 
 def _build_context_snippets(retrieved: list[dict]) -> str:
+    """Format retrieved records into prompt-ready context snippets.
+
+    Args:
+        retrieved: Retrieved documents or chunks to include in the prompt.
+
+    Returns:
+        A newline-separated string containing compact context snippets.
+    """
     snippets = []
     for item in retrieved:
         content = (item.get("content") or item.get("body") or "").strip()
@@ -62,6 +86,18 @@ def _build_context_snippets(retrieved: list[dict]) -> str:
 
 
 def _chat_with_ai_foundry(system_prompt: str, user_prompt: str) -> str:
+    """Send a chat completion request to AI Foundry and return the response.
+
+    Args:
+        system_prompt: System prompt to use for the completion request.
+        user_prompt: User prompt to send to the model.
+
+    Returns:
+        The non-empty response content from AI Foundry.
+
+    Raises:
+        RuntimeError: If the AI Foundry request fails or returns no content.
+    """
     endpoint, api_key, model = _get_ai_foundry_config()
     request_url = endpoint.rstrip("/") + "/chat/completions?api-version=2024-05-01-preview"
     request_body = {
@@ -131,7 +167,12 @@ def GenerateResponseActivity(req: dict) -> str:
         f"Policy evaluation: {json.dumps(policy_eval, ensure_ascii=False)}\n\n"
         f"Retrieved context:\n{_build_context_snippets(retrieved)}"
     )
-    return _chat_with_ai_foundry(system_prompt, user_prompt)
+
+    try:
+        return _chat_with_ai_foundry(system_prompt, user_prompt)
+    except Exception as exc:
+        logging.exception("GenerateResponseActivity failed: %s", exc)
+        return "The response service is temporarily unavailable. Please try again later."
 
 def GenerateRedactedResponseActivity(req: dict) -> str:
     """Build a redacted response from the retrieved chunks.
@@ -164,7 +205,12 @@ def GenerateRedactedResponseActivity(req: dict) -> str:
         f"User request: {query_text}\n\n"
         f"Redacted excerpts:\n{_build_context_snippets(redacted_chunks)}"
     )
-    return _chat_with_ai_foundry(system_prompt, user_prompt)
+
+    try:
+        return _chat_with_ai_foundry(system_prompt, user_prompt)
+    except Exception as exc:
+        logging.exception("GenerateRedactedResponseActivity failed: %s", exc)
+        return "The response service is temporarily unavailable. Please try again later."
 
 def StoreAuditEventActivity(event: dict) -> dict:
     """Persist an audit event to the Cosmos DB audit container.

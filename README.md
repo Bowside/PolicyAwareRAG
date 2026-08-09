@@ -5,11 +5,6 @@ This workspace contains baseline Terraform and Python code for a policy-aware Re
 - Terraform: `terraform/` contains `main.tf`, `variables.tf`, and `outputs.tf` for provisioning Azure resources (Function App, Key Vault, Cosmos DB, Blob Storage, Cognitive Account).
 - Python: Orchestrator and modules for policy validation, retrieval, decision graph, and compliance scanning.
 
-Next steps:
-- Implement and wire Azure Function activity bindings for the activities in `activities.py`.
-- Populate real ODRL policies and deploy Terraform with appropriate `tenant_id` and `subscription_id`.
-- Harden networking, private endpoints, and conditional access for production.
-
 ## Infrastructure Configuration and Deployment
 
 Use `terraform/deploy-terraform.ps1` to initialize and deploy infrastructure.
@@ -135,5 +130,7 @@ For Azure execution:
 4. Invoke `POST /api/orchestrators/start` with a payload that includes `principal`, `odrl_policy`, `query_embedding`, `action`, and `cosmos_collection`. The function app supplies the Cosmos endpoint and database from application settings.
 5. Use one of the policies in `odrl_policies/` to test a `business-observer`, `customer-support-specialist`, `privacy-compliance-analyst`, or `pii-data-governance-admin` role.
 6. Review Application Insights and Function App logs if the orchestration fails, returns a denied response, or redacts output.
+
+The orchestration derives Cosmos DB security filters from the validated ODRL policy before retrieval begins. To make this effective, documents in the vector container should carry matching `securityMetadata` fields for the normalized policy role, target, action, and purpose values produced by the policy validator.
 
 The orchestration function is registered in `function_app.py`, and the activity wrappers keep the current implementations in `orchestrator.py` and `activities.py` intact.

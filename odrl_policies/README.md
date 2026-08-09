@@ -13,4 +13,12 @@ Policy levels included here:
 
 Each policy uses a shared PII asset target and purpose-gated permissions, with explicit export prohibitions on the restricted tiers.
 
-Adapt the asset IRIs, purpose terms, and role IRIs to match the governance model used in your environment.
+The retrieval layer expects document `securityMetadata` to align with the policy-derived keys below:
+
+- `policyUid`: the normalized policy identifier.
+- `policyRole`: the normalized assignee role.
+- `policyTarget`: the normalized target asset identifier.
+- `policyAction`: the requested action, normalized to lowercase.
+- `policyPurpose`: the matched purpose constraint, when the permission rule includes one.
+
+Policies without a purpose constraint still produce role, target, and action filters. The full-access policy therefore still scopes retrieval by policy identity and role, even when it has no explicit purpose gate.
