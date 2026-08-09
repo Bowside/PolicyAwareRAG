@@ -71,7 +71,7 @@ class ConflictAwareRetriever:
             logging.debug(f"Parameters count: {len(params)}")
             raise
 
-    def count_by_sender(self, sender_query: str) -> int:
+    def count_by_sender(self, sender_query: str, security_filters: Optional[Dict[str, Any]] = None) -> int:
         """Count documents whose sender field matches the provided sender text.
 
         Uses a case-insensitive containment check so human names such as
@@ -83,23 +83,45 @@ class ConflictAwareRetriever:
 
         sender_terms = [term for term in re.split(r"[\s,]+", normalized_sender) if term]
         sender_name_match = normalized_sender.lower()
-        sender_local_part = ".".join(sender_terms[:2]).lower() if len(sender_terms) >= 2 else sender_name_match
         sender_variants = []
-        for candidate in (sender_local_part, sender_name_match):
-            candidate = candidate.strip()
+
+        def _add_variant(candidate: str) -> None:
+            candidate = candidate.strip().lower()
             if candidate and candidate not in sender_variants:
                 sender_variants.append(candidate)
 
-        query = """
+        if len(sender_terms) >= 2:
+            _add_variant(".".join(sender_terms[:2]))
+
+        _add_variant(sender_name_match)
+
+        if sender_terms:
+            first_token = sender_terms[0].lower()
+            if first_token.endswith("s") and len(first_token) > 3:
+                singular_terms = [first_token[:-1]] + [term.lower() for term in sender_terms[1:2]]
+                _add_variant(".".join(singular_terms))
+                _add_variant(" ".join([singular_terms[0]] + [term.lower() for term in sender_terms[1:]]))
+
+        where_clauses = [
+            "(" +
+            " OR ".join(f"CONTAINS(LOWER(c[\"from\"]), @sender_{index})" for index, _ in enumerate(sender_variants)) +
+            ")"
+        ]
+        params = [{"name": f"@sender_{index}", "value": candidate} for index, candidate in enumerate(sender_variants)]
+
+        idx = 0
+        for key, value in (security_filters or {}).items():
+            idx += 1
+            param_name = f"@p{idx}"
+            where_clauses.append(f"c.securityMetadata.{key} = {param_name}")
+            params.append({"name": param_name, "value": value})
+
+        where_clause = " AND ".join(where_clauses)
+        query = f"""
             SELECT VALUE COUNT(1)
             FROM c
-            WHERE CONTAINS(LOWER(c["from"]), @sender_local)
-               OR CONTAINS(LOWER(c["from"]), @sender_name)
+            WHERE {where_clause}
         """
-        params = [
-            {"name": "@sender_local", "value": sender_variants[0]},
-            {"name": "@sender_name", "value": sender_variants[1] if len(sender_variants) > 1 else sender_variants[0]},
-        ]
 
         try:
             results = list(

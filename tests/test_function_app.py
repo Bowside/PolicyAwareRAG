@@ -7,12 +7,16 @@ from unittest import mock
 
 
 class _FakeHttpResponse:
+    """Minimal HTTP response stub used by the function app tests."""
+
     def __init__(self, body=None, status_code=200):
         self.body = body
         self.status_code = status_code
 
 
 class _FakeFunctionApp:
+    """Minimal Durable Functions app stub used by the tests."""
+
     def __init__(self, *args, **kwargs):
         self.registered_routes = []
 
@@ -43,6 +47,8 @@ class _FakeFunctionApp:
 
 
 class _FakeDurableClient:
+    """Fake durable client that records the latest orchestration payload."""
+
     def __init__(self):
         self.started = None
 
@@ -55,6 +61,8 @@ class _FakeDurableClient:
 
 
 class _FakeRequest:
+    """Fake HTTP request wrapper for start-orchestration tests."""
+
     def __init__(self, payload, method="POST"):
         self._payload = payload
         self.method = method
@@ -64,6 +72,7 @@ class _FakeRequest:
 
 
 def _install_azure_stubs():
+    """Install lightweight Azure SDK stubs for isolated unit tests."""
     azure_pkg = types.ModuleType("azure")
     azure_pkg.__path__ = []
 
@@ -154,6 +163,7 @@ def _install_azure_stubs():
 
 
 def test_start_orchestration_returns_check_status_response():
+    """Verify the start endpoint returns the durable status response."""
     _install_azure_stubs()
     os.environ["COSMOS_DB_ENDPOINT"] = "https://example-cosmos.documents.azure.com:443/"
     os.environ["COSMOS_DB_DATABASE"] = "policy_rag_db"
@@ -172,6 +182,7 @@ def test_start_orchestration_returns_check_status_response():
 
 
 def test_orchestrator_defaults_missing_collection_to_sample_store():
+    """Verify the orchestrator falls back to the sample Cosmos container."""
     _install_azure_stubs()
     sys.modules.pop("orchestrator", None)
     orchestrator = importlib.import_module("orchestrator")
@@ -220,7 +231,80 @@ def test_orchestrator_defaults_missing_collection_to_sample_store():
     assert captured["cosmos_collection"] == "EnronEmailVectorStore"
 
 
+def test_orchestrator_forwards_security_filters_to_retriever():
+    """Verify policy-derived security filters reach the retriever."""
+    _install_azure_stubs()
+    sys.modules.pop("orchestrator", None)
+    orchestrator = importlib.import_module("orchestrator")
+
+    captured = {}
+
+    class _FakeRetriever:
+        def __init__(self, cosmos_endpoint, database_name, cosmos_collection):
+            captured["cosmos_endpoint"] = cosmos_endpoint
+            captured["database_name"] = database_name
+            captured["cosmos_collection"] = cosmos_collection
+
+        def retrieve(self, query_embedding, filters, top_k=10):
+            captured["filters"] = filters
+            return []
+
+    class _FakeContext:
+        def get_input(self):
+            return {
+                "principal": {"role": "privacy-analyst", "declaredIntent": "compliance_review"},
+                    "odrl_policy": {
+                        "uid": "urn:policyaware:policy:privacy-compliance-analyst",
+                        "permission": [
+                            {
+                                "uid": "urn:policyaware:permission:privacy-compliance-analyst:compliance-review",
+                                "target": "urn:policyaware:asset:pii-rag-corpus",
+                                "action": ["summarise"],
+                                "assignee": "urn:policyaware:role:privacy-compliance-analyst",
+                                "constraint": {
+                                    "leftOperand": "purpose",
+                                    "operator": "eq",
+                                    "rightOperand": "compliance_review",
+                                },
+                            }
+                        ],
+                    },
+                "query_text": "Summarise the approved content.",
+                "query_embedding": list(range(16)),
+                "security_filters": {"classification": "confidential", "disallow": False},
+                "action": "summarise",
+                "cosmos_endpoint": "https://example-cosmos.documents.azure.com:443/",
+                "database": "policy_rag_db",
+            }
+
+        def call_activity(self, *args, **kwargs):
+            if args and args[0] == "StoreAuditEventActivity":
+                return {"status": "ok"}
+            raise AssertionError(f"Unexpected activity call: {args!r} {kwargs!r}")
+
+    with mock.patch.object(orchestrator, "ConflictAwareRetriever", _FakeRetriever), mock.patch.object(
+        orchestrator.PolicyPurposeValidator, "evaluate", return_value=(True, {"satisfied": True, "matchedRules": ["rule-1"]})
+    ):
+        generator = orchestrator.orchestrator_function(_FakeContext())
+        try:
+            first_yield = next(generator)
+            result = generator.send({"status": "ok"})
+        except StopIteration as stop:
+            result = stop.value
+
+    assert first_yield == {"status": "ok"}
+    assert captured["filters"] == {
+        "policyUid": "privacy-compliance-analyst",
+        "policyRole": "privacy-compliance-analyst",
+        "policyTarget": "pii-rag-corpus",
+        "policyAction": "summarise",
+        "policyPurpose": "compliance_review",
+    }
+    assert result["status"] == "ok"
+
+
 def test_count_query_does_not_build_embedding():
+    """Verify count queries skip embedding generation and return counts."""
     _install_azure_stubs()
     sys.modules.pop("orchestrator", None)
     orchestrator = importlib.import_module("orchestrator")
@@ -231,7 +315,7 @@ def test_count_query_does_not_build_embedding():
             self.database_name = database_name
             self.cosmos_collection = cosmos_collection
 
-        def count_by_sender(self, sender):
+        def count_by_sender(self, sender, security_filters=None):
             return 7
 
     class _FakeContext:
@@ -269,6 +353,7 @@ def test_count_query_does_not_build_embedding():
 
 
 def test_orchestrator_counts_sender_queries_without_llm():
+    """Verify count queries resolve without calling the LLM activity."""
     _install_azure_stubs()
     sys.modules.pop("orchestrator", None)
     orchestrator = importlib.import_module("orchestrator")
@@ -281,8 +366,9 @@ def test_orchestrator_counts_sender_queries_without_llm():
             captured["database_name"] = database_name
             captured["cosmos_collection"] = cosmos_collection
 
-        def count_by_sender(self, sender_query):
+        def count_by_sender(self, sender_query, security_filters=None):
             captured["sender_query"] = sender_query
+            captured["security_filters"] = security_filters
             return 3
 
         def retrieve(self, query_embedding, filters, top_k=10):
@@ -325,7 +411,117 @@ def test_orchestrator_counts_sender_queries_without_llm():
     assert result["result"] == "Fran Fagan sent 3 emails."
 
 
+def test_orchestrator_counts_sender_query_with_typo_variant():
+    """Verify common sender-name typos still resolve to the count path."""
+    _install_azure_stubs()
+    sys.modules.pop("orchestrator", None)
+    orchestrator = importlib.import_module("orchestrator")
+
+    captured = {}
+
+    class _FakeRetriever:
+        def __init__(self, cosmos_endpoint, database_name, cosmos_collection):
+            captured["cosmos_collection"] = cosmos_collection
+
+        def count_by_sender(self, sender_query, security_filters=None):
+            captured["sender_query"] = sender_query
+            captured["security_filters"] = security_filters
+            return 9
+
+    class _FakeContext:
+        def get_input(self):
+            return {
+                "principal": {"role": "privacy-compliance-analyst", "declaredIntent": "compliance_review"},
+                "odrl_policy": {
+                    "uid": "urn:policyaware:policy:privacy-compliance-analyst",
+                    "permission": [
+                        {
+                            "uid": "urn:policyaware:permission:privacy-compliance-analyst:compliance-review",
+                            "target": "urn:policyaware:asset:pii-rag-corpus",
+                            "action": ["summarise"],
+                            "assignee": "urn:policyaware:role:privacy-compliance-analyst",
+                            "constraint": {"leftOperand": "purpose", "operator": "eq", "rightOperand": "compliance_review"},
+                        }
+                    ],
+                },
+                "query_text": "How many emails did Frans Fagan send?",
+                "action": "summarise",
+                "cosmos_endpoint": "https://example-cosmos.documents.azure.com:443/",
+                "database": "policy_rag_db",
+            }
+
+        def call_activity(self, *args, **kwargs):
+            if args and args[0] == "StoreAuditEventActivity":
+                return {"status": "ok"}
+            raise AssertionError(f"Unexpected activity call: {args!r} {kwargs!r}")
+
+    with mock.patch.object(orchestrator, "ConflictAwareRetriever", _FakeRetriever), mock.patch.object(
+        orchestrator.PolicyPurposeValidator, "evaluate", return_value=(True, {"satisfied": True, "matchedRules": ["rule-1"]})
+    ):
+        generator = orchestrator.orchestrator_function(_FakeContext())
+        try:
+            next(generator)
+            result = generator.send({"status": "ok"})
+        except StopIteration as stop:
+            result = stop.value
+
+    assert captured["sender_query"] == "Frans Fagan"
+    assert result["outcomeType"] == "count_result"
+    assert result["count"] == 9
+
+
+def test_orchestrator_uses_multi_agent_graph_to_deny_disallowed_chunks():
+    """Verify disallowed chunks are denied before generation starts."""
+    _install_azure_stubs()
+    sys.modules.pop("orchestrator", None)
+    orchestrator = importlib.import_module("orchestrator")
+
+    called_activities = []
+
+    class _FakeRetriever:
+        def __init__(self, cosmos_endpoint, database_name, cosmos_collection):
+            self.cosmos_endpoint = cosmos_endpoint
+            self.database_name = database_name
+            self.cosmos_collection = cosmos_collection
+
+        def retrieve(self, query_embedding, filters, top_k=10):
+            return [{"id": "chunk-1", "securityMetadata": {"disallow": True}, "content": "restricted content"}]
+
+    class _FakeContext:
+        def get_input(self):
+            return {
+                "principal": {"role": "privacy-analyst", "declaredIntent": "compliance_review"},
+                "odrl_policy": {"permission": [{"uid": "rule-1", "action": ["summarise"]}]},
+                "query_text": "Summarise the approved content.",
+                "query_embedding": list(range(16)),
+                "action": "summarise",
+                "cosmos_endpoint": "https://example-cosmos.documents.azure.com:443/",
+                "database": "policy_rag_db",
+            }
+
+        def call_activity(self, *args, **kwargs):
+            called_activities.append(args[0])
+            if args and args[0] == "StoreAuditEventActivity":
+                return {"status": "ok"}
+            raise AssertionError(f"Unexpected activity call: {args!r} {kwargs!r}")
+
+    with mock.patch.object(orchestrator, "ConflictAwareRetriever", _FakeRetriever), mock.patch.object(
+        orchestrator.PolicyPurposeValidator, "evaluate", return_value=(True, {"satisfied": True, "matchedRules": ["rule-1"]})
+    ):
+        generator = orchestrator.orchestrator_function(_FakeContext())
+        try:
+            first_yield = next(generator)
+            result = generator.send({"status": "ok"})
+        except StopIteration as stop:
+            result = stop.value
+
+    assert first_yield == {"status": "ok"}
+    assert result["status"] == "denied"
+    assert "GenerateResponseActivity" not in called_activities
+
+
 def test_start_orchestration_rejects_invalid_json():
+    """Verify malformed JSON requests are rejected with HTTP 400."""
     _install_azure_stubs()
     sys.modules.pop("function_app", None)
     function_app = importlib.import_module("function_app")
@@ -340,6 +536,7 @@ def test_start_orchestration_rejects_invalid_json():
 
 
 def test_generate_response_activity_uses_ai_foundry_chat_completion():
+    """Verify the response activity calls AI Foundry with the expected prompt."""
     _install_azure_stubs()
     os.environ["AI_FOUNDRY_Endpoint"] = "https://example-foundry.services.ai.azure.com/models"
     os.environ["AI_FOUNDRY_KEY"] = "test-key"
@@ -389,6 +586,7 @@ def test_generate_response_activity_uses_ai_foundry_chat_completion():
 
 
 def test_generate_response_activity_includes_body_field_from_retrieved_documents():
+    """Verify retrieved email bodies are included in the generation prompt."""
     _install_azure_stubs()
     os.environ["AI_FOUNDRY_Endpoint"] = "https://example-foundry.services.ai.azure.com/models"
     os.environ["AI_FOUNDRY_KEY"] = "test-key"
@@ -446,6 +644,7 @@ def test_generate_response_activity_includes_body_field_from_retrieved_documents
 
 
 def test_build_audit_event_includes_request_policy_and_outcome():
+    """Verify audit events capture request, policy, and outcome data."""
     _install_azure_stubs()
     sys.modules.pop("orchestrator", None)
     orchestrator = importlib.import_module("orchestrator")
@@ -485,6 +684,7 @@ def test_build_audit_event_includes_request_policy_and_outcome():
 
 
 def test_build_audit_event_preserves_no_results_outcome_type():
+    """Verify no-results outcomes are preserved in the audit payload."""
     _install_azure_stubs()
     sys.modules.pop("orchestrator", None)
     orchestrator = importlib.import_module("orchestrator")
@@ -519,6 +719,7 @@ def test_build_audit_event_preserves_no_results_outcome_type():
 
 
 def test_build_audit_event_includes_timing_fields():
+    """Verify audit events include start, end, and duration timestamps."""
     _install_azure_stubs()
     sys.modules.pop("orchestrator", None)
     orchestrator = importlib.import_module("orchestrator")
@@ -550,6 +751,7 @@ def test_build_audit_event_includes_timing_fields():
 
 
 def test_store_audit_event_activity_upserts_with_transaction_id_as_item_id():
+    """Verify audit events are upserted with the transaction ID as the item ID."""
     _install_azure_stubs()
     os.environ["COSMOS_KEY"] = "test-cosmos-key"
     sys.modules.pop("activities", None)
