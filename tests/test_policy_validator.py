@@ -2,6 +2,7 @@ from policy_validator import PolicyPurposeValidator
 
 
 def test_policy_validator_allows_matching_action_and_purpose():
+    """Verify matching role, purpose, and action are allowed."""
     policy = {
         "@context": "https://www.w3.org/ns/odrl.jsonld",
         "@type": "Set",
@@ -23,6 +24,7 @@ def test_policy_validator_allows_matching_action_and_purpose():
 
 
 def test_policy_validator_rejects_non_matching_purpose():
+    """Verify an unmatched purpose is rejected."""
     policy = {
         "@context": "https://www.w3.org/ns/odrl.jsonld",
         "@type": "Set",
@@ -44,6 +46,7 @@ def test_policy_validator_rejects_non_matching_purpose():
 
 
 def test_policy_validator_rejects_matching_prohibition():
+    """Verify a matching prohibition blocks the action."""
     policy = {
         "@context": "https://www.w3.org/ns/odrl.jsonld",
         "@type": "Set",
@@ -70,6 +73,7 @@ def test_policy_validator_rejects_matching_prohibition():
 
 
 def test_policy_validator_enforces_assignee_role_match():
+    """Verify the validator enforces the assignee role."""
     policy = {
         "@context": "https://www.w3.org/ns/odrl.jsonld",
         "@type": "Set",
@@ -91,6 +95,7 @@ def test_policy_validator_enforces_assignee_role_match():
 
 
 def test_policy_validator_denies_when_assignee_role_does_not_match():
+    """Verify a non-matching assignee role is denied."""
     policy = {
         "@context": "https://www.w3.org/ns/odrl.jsonld",
         "@type": "Set",
@@ -112,6 +117,7 @@ def test_policy_validator_denies_when_assignee_role_does_not_match():
 
 
 def test_policy_validator_allows_legacy_role_aliases():
+    """Verify legacy role aliases map to the canonical role."""
     policy = {
         "@context": "https://www.w3.org/ns/odrl.jsonld",
         "@type": "Set",
@@ -132,7 +138,37 @@ def test_policy_validator_allows_legacy_role_aliases():
     assert detail["satisfied"] is True
 
 
+def test_policy_validator_derives_security_filters_from_policy():
+    """Verify security filters are derived from the policy document."""
+    policy = {
+        "@context": "https://www.w3.org/ns/odrl.jsonld",
+        "@type": "Set",
+        "uid": "urn:policyaware:policy:privacy-compliance-analyst",
+        "permission": [
+            {
+                "uid": "urn:policyaware:permission:privacy-compliance-analyst:compliance-review",
+                "target": "urn:policyaware:asset:pii-rag-corpus",
+                "action": ["summarise"],
+                "assignee": "urn:policyaware:role:privacy-compliance-analyst",
+                "constraint": {"leftOperand": "purpose", "operator": "eq", "rightOperand": "compliance_review"},
+            }
+        ],
+    }
+
+    validator = PolicyPurposeValidator(policy)
+    filters = validator.derive_security_filters("privacy-compliance-analyst", "compliance_review", "summarise")
+
+    assert filters == {
+        "policyUid": "privacy-compliance-analyst",
+        "policyRole": "privacy-compliance-analyst",
+        "policyTarget": "pii-rag-corpus",
+        "policyAction": "summarise",
+        "policyPurpose": "compliance_review",
+    }
+
+
 def test_policy_validator_rejects_legacy_rules_shape():
+    """Verify legacy rules-only policies are rejected."""
     policy = {
         "@context": "https://www.w3.org/ns/odrl.jsonld",
         "@type": "Set",

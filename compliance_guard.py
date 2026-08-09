@@ -23,9 +23,26 @@ def scan_for_verbatim_pii(generated_text: str, retrieved_chunks: List[Dict]) -> 
             findings.append(f"{name}:{m}")
 
     for c in retrieved_chunks:
-        content = c.get("content", "")
+        content = c.get("content") or c.get("body") or ""
+        if not content:
+            continue
+
         if len(content) > 50 and content in generated_text:
             findings.append(f"verbatim_leak:{c.get('id')}")
+            continue
+
+        source_tokens = re.findall(r"\w+", content.lower())
+        generated_tokens = re.findall(r"\w+", generated_text.lower())
+        if len(source_tokens) < 8 or len(generated_tokens) < 8:
+            continue
+
+        source_phrases = {
+            " ".join(source_tokens[index : index + 8])
+            for index in range(0, len(source_tokens) - 7)
+        }
+        generated_text_normalized = " ".join(generated_tokens)
+        if any(phrase in generated_text_normalized for phrase in source_phrases):
+            findings.append(f"near_verbatim_leak:{c.get('id')}")
     return (len(findings) > 0, findings)
 
 def compliance_guard(generated_text: str, retrieved_chunks: List[Dict]) -> Dict:
