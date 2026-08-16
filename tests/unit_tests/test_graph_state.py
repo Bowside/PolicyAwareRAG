@@ -1,8 +1,14 @@
-from graph_state import MultiAgentGraph, restrictive_agent, permissive_agent
+"""Unit tests for the multi-agent graph decision logic.
+
+These tests validate deny-veto behavior, allow decisions when policy satisfaction
+is present, and JSON serialization of the graph output.
+"""
+
+from graph_state import MultiAgentGraph, permissive_agent, restrictive_agent
 
 
 def test_restrictive_agent_denies_disallowed_chunk():
-    """Verify the restrictive agent denies chunks tagged as disallowed."""
+    """The restrictive agent should deny any chunk marked disallowed."""
     chunk = {"securityMetadata": {"disallow": True}}
 
     signal = restrictive_agent([chunk], {})
@@ -11,7 +17,7 @@ def test_restrictive_agent_denies_disallowed_chunk():
 
 
 def test_multi_agent_graph_prefers_deny_over_allow():
-    """Verify deny votes override allow votes in the agent graph."""
+    """Deny votes should override allow votes when both are present."""
     graph = MultiAgentGraph(agents=[restrictive_agent, permissive_agent])
     chunks = [{"securityMetadata": {"disallow": True}}]
 
@@ -23,7 +29,7 @@ def test_multi_agent_graph_prefers_deny_over_allow():
 
 
 def test_multi_agent_graph_can_allow_when_policy_satisfied():
-    """Verify the graph can allow when policy state is satisfied."""
+    """A satisfied policy state should allow the graph to return an allow-like decision."""
     graph = MultiAgentGraph(agents=[restrictive_agent, permissive_agent])
 
     result = graph.evaluate([], {"satisfied": True})
@@ -33,7 +39,7 @@ def test_multi_agent_graph_can_allow_when_policy_satisfied():
 
 
 def test_multi_agent_graph_output_is_json_serializable():
-    """Verify the agent graph output can be serialized to JSON."""
+    """The graph output should be serializable for audit and transport payloads."""
     graph = MultiAgentGraph(agents=[restrictive_agent, permissive_agent])
 
     result = graph.evaluate([], {"satisfied": True})

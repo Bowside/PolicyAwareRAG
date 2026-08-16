@@ -1,8 +1,29 @@
-from models import ODRLPolicy
-from pydantic import ValidationError
+"""Policy validation helpers for ODRL-based intent and role enforcement.
+
+The validator inspects permission and prohibition rules in an ODRL policy,
+normalizes IRI-style role values, and evaluates whether a principal's declared
+intent and role satisfy the policy for a requested action. This module is used
+by the orchestrator to decide whether data may be retrieved, denied, or partially
+redacted before being returned to the user.
+"""
+
 from typing import Tuple
 
+from pydantic import ValidationError
+
+from models import ODRLPolicy
+
+
 class PolicyPurposeValidator:
+    """Validate role and purpose constraints for an ODRL policy.
+
+    The validator supports the policy semantics used by this application:
+    - role checks against rule assignee values
+    - purpose checks against the principal's declared intent
+    - permission and prohibition evaluation for a requested action
+    - deriving Cosmos DB security filters from the first matching rule
+    """
+
     def __init__(self, odrl_jsonld: dict):
         """Parse and store an ODRL policy document.
 
@@ -12,10 +33,12 @@ class PolicyPurposeValidator:
         Raises:
             ValueError: If the policy cannot be validated against the ODRL model.
         """
-        # Preprocess incoming policy to be tolerant of missing optional fields
+        # Preprocess incoming policy to be tolerant of missing optional fields.
         prepped = dict(odrl_jsonld) if odrl_jsonld is not None else {}
         if "rules" in prepped:
-            raise ValueError("Invalid ODRL policy: legacy 'rules' shape is not supported; use 'permission' and 'prohibition'.")
+            raise ValueError(
+                "Invalid ODRL policy: legacy 'rules' shape is not supported; use 'permission' and 'prohibition'."
+            )
         if "prohibition" not in prepped:
             prepped["prohibition"] = []
         if "duty" not in prepped:
@@ -24,13 +47,13 @@ class PolicyPurposeValidator:
         try:
             self.policy = ODRLPolicy(**prepped)
         except ValidationError as e:
-            raise ValueError(f"Invalid ODRL policy: {e}")
+            raise ValueError(f"Invalid ODRL policy: {e}") from e
 
     def _rule_groups(self):
-        """Return the policy's permission and prohibition groups.
+        """Return the permission and prohibition groups in the policy.
 
         Returns:
-            A tuple of ``(permissions, prohibitions)`` lists.
+            tuple: A pair of (permissions, prohibitions) lists.
         """
         permissions = self.policy.permission or []
         prohibitions = self.policy.prohibition or []
@@ -44,7 +67,7 @@ class PolicyPurposeValidator:
             rule: ODRL rule object to inspect.
 
         Returns:
-            A list of constraint objects, or an empty list.
+            list: Constraint objects, or an empty list when none are present.
         """
         constraints = rule.constraint
         if constraints is None:
@@ -61,7 +84,7 @@ class PolicyPurposeValidator:
             constraint: Constraint object or dictionary to inspect.
 
         Returns:
-            A list of purpose strings extracted from the constraint.
+            list: Purpose strings extracted from the constraint.
         """
         if not isinstance(constraint, dict):
             return []
@@ -82,14 +105,15 @@ class PolicyPurposeValidator:
         return purposes
 
     def _constraint_allows(self, rule, declared_intent: str) -> Tuple[bool, str]:
-        """Check whether a rule's purpose constraint allows the declared intent.
+        """Check whether a rule's purpose constraint accepts the declared intent.
 
         Args:
             rule: ODRL rule being evaluated.
             declared_intent: Intent declared by the principal.
 
         Returns:
-            A tuple of ``(allowed, explanation)``.
+            tuple: (allowed, explanation) describing whether the declared intent is
+                permitted by the rule's purpose constraint.
         """
         constraints = self._rule_constraints(rule)
         if not constraints:
@@ -109,13 +133,13 @@ class PolicyPurposeValidator:
 
     @staticmethod
     def _canonical_role(value: str | None) -> str:
-        """Normalize a role IRI or alias to the canonical role token.
+        """Normalize a role IRI or alias to a canonical role token.
 
         Args:
             value: Raw role value from the policy or principal.
 
         Returns:
-            The normalized role token.
+            str: Canonicalized role name used for comparison.
         """
         if not value:
             return ""
@@ -145,7 +169,7 @@ class PolicyPurposeValidator:
             value: Raw policy value.
 
         Returns:
-            The normalized terminal token.
+            str: Terminal segment of the value, with whitespace trimmed.
         """
         if not value:
             return ""
@@ -167,7 +191,7 @@ class PolicyPurposeValidator:
             action: Requested action.
 
         Returns:
-            A dictionary of policy-derived security filters, or an empty dict.
+            dict: Policy-derived security filters for retrieval, or an empty dict.
         """
         role_allowed, _ = self._role_allows(rule, principal_role)
         if not role_allowed:
@@ -191,7 +215,10 @@ class PolicyPurposeValidator:
         for constraint in self._rule_constraints(rule):
             allowed_purposes.extend(self._constraint_purposes(constraint))
 
-        matched_purpose = next((purpose for purpose in allowed_purposes if purpose.lower() == declared_intent.lower()), "")
+        matched_purpose = next(
+            (purpose for purpose in allowed_purposes if purpose.lower() == declared_intent.lower()),
+            "",
+        )
         if not matched_purpose and allowed_purposes:
             matched_purpose = allowed_purposes[0]
         if matched_purpose:
@@ -203,7 +230,17 @@ class PolicyPurposeValidator:
         return {key: value for key, value in filters.items() if value}
 
     def derive_security_filters(self, principal_role: str, declared_intent: str, action: str) -> dict:
-        """Derive Cosmos security metadata filters from the first matching permission rule."""
+        """Derive security metadata filters from the first matching permission rule.
+
+        Args:
+            principal_role: Role declared by the principal.
+            declared_intent: Purpose or intent declared by the principal.
+            action: Requested action.
+
+        Returns:
+            dict: Security filter dict for Cosmos DB retrieval, or an empty dict when
+                no permission rule matches.
+        """
         permissions, _ = self._rule_groups()
         for rule in permissions:
             filters = self._permission_security_filters(rule, principal_role, declared_intent, action)
@@ -216,10 +253,10 @@ class PolicyPurposeValidator:
 
         Args:
             rule: ODRL rule being evaluated.
-            principal_role: Declared role of the principal.
+            principal_role: Role declared by the principal.
 
         Returns:
-            A tuple of ``(allowed, explanation)``.
+            tuple: (allowed, explanation) describing the role comparison result.
         """
         if not getattr(rule, "assignee", None):
             return True, "no assignee constraint -> permissive"
@@ -233,15 +270,21 @@ class PolicyPurposeValidator:
         return False, "principal role did not match assignee"
 
     def evaluate(self, principal_role: str, declared_intent: str, action: str) -> Tuple[bool, dict]:
-        """Evaluate whether the declared intent satisfies the policy rules.
+        """Evaluate whether the principal can take the requested action under the policy.
+
+        The method checks all prohibitions first, then permission rules. If a
+        prohibition matches the action and role and the declared intent is allowed,
+        access is denied. Otherwise, a permission rule can grant access when the
+        declared intent satisfies its purpose and role constraints.
 
         Args:
             principal_role: Role declared by the principal.
             declared_intent: Intent declared by the principal.
-            action: Requested action to evaluate against the policy rules.
+            action: Requested action to validate.
 
         Returns:
-            A tuple containing the allow decision and a detailed evaluation record.
+            tuple: (allowed, evaluation_dict) where the evaluation dict records the
+                matched rules and reasoning trail.
         """
         permissions, prohibitions = self._rule_groups()
         matched_rules = []
@@ -295,6 +338,6 @@ class PolicyPurposeValidator:
             "action": action,
             "declared_intent": declared_intent,
             "principal_role": principal_role,
-            "satisfied": satisfied
+            "satisfied": satisfied,
         }
         return satisfied, evaluation

@@ -1,8 +1,14 @@
+"""Unit tests for compliance guard detection and enforcement logic.
+
+These tests cover direct PII detection, verbatim leakage, and near-verbatim
+reuse that should trigger the fail-safe compliance decision.
+"""
+
 from compliance_guard import compliance_guard, scan_for_verbatim_pii
 
 
 def test_scan_for_verbatim_pii_detects_email_and_verbatim_leak():
-    """Verify the guard detects PII and verbatim leakage."""
+    """The guard should detect email content and direct chunk reuse."""
     chunks = [
         {"id": "chunk-1", "content": "This is a long retrieved chunk with enough length to trigger leakage detection."}
     ]
@@ -16,7 +22,7 @@ def test_scan_for_verbatim_pii_detects_email_and_verbatim_leak():
 
 
 def test_compliance_guard_passes_without_pii():
-    """Verify the guard passes safe output unchanged."""
+    """Safe content with no PII or overlap should pass release checks."""
     result = compliance_guard("No sensitive content here.", [{"id": "chunk-2", "content": "short text"}])
 
     assert result["status"] == "Pass"
@@ -25,7 +31,7 @@ def test_compliance_guard_passes_without_pii():
 
 
 def test_compliance_guard_detects_body_field_and_near_verbatim_overlap():
-    """Verify the guard inspects body text and catches near-verbatim reuse."""
+    """Body-based retrievals should also trigger compliance failures for overlap."""
     retrieved_chunks = [
         {
             "id": "chunk-3",

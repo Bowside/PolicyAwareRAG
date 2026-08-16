@@ -1,7 +1,14 @@
+"""Unit tests for the policy-aware activity helpers.
+
+These tests validate the formatting of retrieved chunks for model prompts and the
+fallback error handling used when the AI Foundry call fails.
+"""
+
 import activities
 
 
 def test_build_context_snippets_uses_multiple_text_fields():
+    """Retrieved chunks should render whichever text field is present."""
     retrieved = [
         {"id": "chunk-1", "text": "This is the actual retrieved content.", "subject": "Quarterly review"},
         {"id": "chunk-2", "body": "Another chunk with policy context.", "from": "ops@example.com"},
@@ -14,6 +21,8 @@ def test_build_context_snippets_uses_multiple_text_fields():
 
 
 def test_generate_response_activity_returns_fallback_when_ai_call_fails(monkeypatch):
+    """A failing AI service call should surface a clear user-facing fallback."""
+
     def raise_error(*args, **kwargs):
         raise RuntimeError("AI service unavailable")
 
@@ -34,6 +43,8 @@ def test_generate_response_activity_returns_fallback_when_ai_call_fails(monkeypa
 
 
 def test_generate_redacted_response_activity_returns_fallback_when_ai_call_fails(monkeypatch):
+    """Redacted generation should fail gracefully with the same fallback contract."""
+
     def raise_error(*args, **kwargs):
         raise RuntimeError("AI service unavailable")
 
