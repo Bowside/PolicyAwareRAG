@@ -1,5 +1,13 @@
+"""Detection and enforcement helpers for PII leakage and compliance checks.
+
+This module scans generated responses for direct personally identifiable
+information and checks for verbatim or near-verbatim copying from retrieved
+source chunks. It is used as a last-mile compliance layer before a response is
+released to a user or sent to a downstream audit trail.
+"""
+
 import re
-from typing import Tuple, List, Dict
+from typing import Dict, List, Tuple
 
 PII_PATTERNS = {
     "email": re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"),
@@ -7,28 +15,35 @@ PII_PATTERNS = {
     "phone": re.compile(r"\+?\d[\d\-\s]{7,}\d"),
 }
 
+
 def scan_for_verbatim_pii(generated_text: str, retrieved_chunks: List[Dict]) -> Tuple[bool, List[str]]:
-    """Detect direct PII matches and verbatim leakage from retrieved chunks.
+    """Detect direct PII and leakage patterns in a generated response.
+
+    The method checks for common PII patterns in the generated text and then
+    compares the generated output to retrieved source chunks for the following:
+    - exact verbatim leakage (a long source chunk appears unchanged)
+    - near-verbatim leakage (a long sequence of source tokens appears in the output)
 
     Args:
-        generated_text: The generated response text to inspect.
-        retrieved_chunks: Retrieved chunks used as the source context.
+        generated_text: Response text to inspect for leakage or PII exposure.
+        retrieved_chunks: Retrieved source chunks used as the compliance baseline.
 
     Returns:
-        A tuple containing a boolean flag and a list of findings.
+        tuple: (contains_violation, findings). Findings are a list of strings like
+            "email:person@example.com" or "verbatim_leak:chunk-12".
     """
     findings = []
     for name, pat in PII_PATTERNS.items():
-        for m in pat.findall(generated_text):
-            findings.append(f"{name}:{m}")
+        for match in pat.findall(generated_text):
+            findings.append(f"{name}:{match}")
 
-    for c in retrieved_chunks:
-        content = c.get("content") or c.get("body") or ""
+    for chunk in retrieved_chunks:
+        content = chunk.get("content") or chunk.get("body") or ""
         if not content:
             continue
 
         if len(content) > 50 and content in generated_text:
-            findings.append(f"verbatim_leak:{c.get('id')}")
+            findings.append(f"verbatim_leak:{chunk.get('id')}")
             continue
 
         source_tokens = re.findall(r"\w+", content.lower())
@@ -42,18 +57,23 @@ def scan_for_verbatim_pii(generated_text: str, retrieved_chunks: List[Dict]) -> 
         }
         generated_text_normalized = " ".join(generated_tokens)
         if any(phrase in generated_text_normalized for phrase in source_phrases):
-            findings.append(f"near_verbatim_leak:{c.get('id')}")
+            findings.append(f"near_verbatim_leak:{chunk.get('id')}")
     return (len(findings) > 0, findings)
 
+
 def compliance_guard(generated_text: str, retrieved_chunks: List[Dict]) -> Dict:
-    """Apply the compliance policy to the generated response.
+    """Apply the compliance policy to a generated response.
+
+    This function is the public compliance gate: it scans the response for PII or
+    leakage patterns and converts the result to a simple status structure used by
+    the orchestration layer for allow/block decisions.
 
     Args:
-        generated_text: The response text to validate.
+        generated_text: Generated response text to validate.
         retrieved_chunks: Retrieved chunks used to check for leakage.
 
     Returns:
-        A status dictionary with the enforcement action and any findings.
+        dict: A status payload with keys "status", "action", and "findings".
     """
     contains_pii, findings = scan_for_verbatim_pii(generated_text, retrieved_chunks)
     status = "Fail" if contains_pii else "Pass"

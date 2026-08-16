@@ -1,9 +1,18 @@
+"""Unit tests for the Cosmos-backed retriever and policy-aware filtering.
+
+These tests verify that vector retrieval executes against the fake Cosmos client
+and that retrieved records are filtered correctly based on security metadata and
+role assertions.
+"""
+
 import importlib
 import sys
 import types
 
 
 class _FakeContainer:
+    """Minimal fake Cosmos container used by the retriever tests."""
+
     def __init__(self, items):
         self.items = items
         self.queries = []
@@ -20,6 +29,8 @@ class _FakeContainer:
 
 
 class _FakeDatabaseClient:
+    """Minimal fake Cosmos database client used by the retriever tests."""
+
     def __init__(self, container):
         self.container = container
 
@@ -30,6 +41,8 @@ class _FakeDatabaseClient:
 
 
 class _FakeCosmosClient:
+    """Minimal fake Cosmos client that records the active database and container."""
+
     last_instance = None
 
     def __init__(self, *args, **kwargs):
@@ -47,8 +60,8 @@ class _FakeCosmosClient:
         return self.database_client
 
 
-
 def test_retrieve_returns_cosmos_rows(monkeypatch, caplog):
+    """Vector retrieval should return rows from the fake Cosmos container."""
     fake_cosmos = types.ModuleType("azure.cosmos")
     fake_cosmos.CosmosClient = _FakeCosmosClient
     monkeypatch.setitem(sys.modules, "azure.cosmos", fake_cosmos)
@@ -73,6 +86,7 @@ def test_retrieve_returns_cosmos_rows(monkeypatch, caplog):
 
 
 def test_retrieve_filters_records_by_policy_role(monkeypatch):
+    """Records with a mismatched policy role should be filtered out."""
     fake_cosmos = types.ModuleType("azure.cosmos")
     fake_cosmos.CosmosClient = _FakeCosmosClient
     monkeypatch.setitem(sys.modules, "azure.cosmos", fake_cosmos)

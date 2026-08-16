@@ -1,212 +1,214 @@
-import json
+"""Unit tests for the Azure Functions entry point and HTTP start trigger.
+
+These tests isolate the app startup flow by stubbing the Azure SDK objects and
+verifying that the orchestrator is started with the expected request payload.
+"""
+
 import importlib
 import os
 import sys
 import types
-from unittest import mock
 
 
 class _FakeHttpResponse:
-	"""Minimal HTTP response stub used by the function app tests."""
+    """Minimal HTTP response stub used by the function app tests."""
 
-	def __init__(self, body=None, status_code=200):
-		self.body = body
-		self.status_code = status_code
+    def __init__(self, body=None, status_code=200):
+        self.body = body
+        self.status_code = status_code
 
 
 class _FakeFunctionApp:
-	"""Minimal Durable Functions app stub used by the tests."""
+    """Minimal Durable Functions app stub used by the tests."""
 
-	def __init__(self, *args, **kwargs):
-		self.registered_routes = []
+    def __init__(self, *args, **kwargs):
+        self.registered_routes = []
 
-	def orchestration_trigger(self, *args, **kwargs):
-		def decorator(func):
-			return func
+    def orchestration_trigger(self, *args, **kwargs):
+        def decorator(func):
+            return func
 
-		return decorator
+        return decorator
 
-	def activity_trigger(self, *args, **kwargs):
-		def decorator(func):
-			return func
+    def activity_trigger(self, *args, **kwargs):
+        def decorator(func):
+            return func
 
-		return decorator
+        return decorator
 
-	def route(self, *args, **kwargs):
-		def decorator(func):
-			self.registered_routes.append((args, kwargs, func.__name__))
-			return func
+    def route(self, *args, **kwargs):
+        def decorator(func):
+            self.registered_routes.append((args, kwargs, func.__name__))
+            return func
 
-		return decorator
+        return decorator
 
-	def durable_client_input(self, *args, **kwargs):
-		def decorator(func):
-			return func
+    def durable_client_input(self, *args, **kwargs):
+        def decorator(func):
+            return func
 
-		return decorator
+        return decorator
 
 
 class _FakeDurableClient:
-	"""Fake durable client that records the latest orchestration payload."""
+    """Fake durable client that records the latest orchestration payload."""
 
-	def __init__(self):
-		self.started = None
+    def __init__(self):
+        self.started = None
 
-	async def start_new(self, name, instance_id, input_data):
-		self.started = (name, instance_id, input_data)
-		return "instance-123"
+    async def start_new(self, name, instance_id, input_data):
+        self.started = (name, instance_id, input_data)
+        return "instance-123"
 
-	def create_check_status_response(self, req, instance_id):
-		return {"instanceId": instance_id, "method": req.method}
+    def create_check_status_response(self, req, instance_id):
+        return {"instanceId": instance_id, "method": req.method}
 
 
 class _FakeRequest:
-	"""Fake HTTP request wrapper for start-orchestration tests."""
+    """Fake HTTP request wrapper for start-orchestration tests."""
 
-	def __init__(self, payload, method="POST"):
-		self._payload = payload
-		self.method = method
+    def __init__(self, payload, method="POST"):
+        self._payload = payload
+        self.method = method
 
-	def get_json(self):
-		return self._payload
+    def get_json(self):
+        return self._payload
 
 
 def _install_azure_stubs():
-	"""Install lightweight Azure SDK stubs for isolated unit tests."""
-	azure_pkg = types.ModuleType("azure")
-	azure_pkg.__path__ = []
+    """Install lightweight Azure SDK stubs for isolated unit tests."""
+    azure_pkg = types.ModuleType("azure")
+    azure_pkg.__path__ = []
 
-	numpy_mod = types.ModuleType("numpy")
+    numpy_mod = types.ModuleType("numpy")
 
-	class _FakeArray(list):
-		@property
-		def size(self):
-			return len(self)
+    class _FakeArray(list):
+        @property
+        def size(self):
+            return len(self)
 
-	numpy_mod.ndarray = _FakeArray
+    numpy_mod.ndarray = _FakeArray
 
-	class _FakeLinalg:
-		@staticmethod
-		def norm(values):
-			return sum(float(value) * float(value) for value in values) ** 0.5
+    class _FakeLinalg:
+        @staticmethod
+        def norm(values):
+            return sum(float(value) * float(value) for value in values) ** 0.5
 
-	def _array(values, dtype=float):
-		return _FakeArray(float(value) for value in values)
+    def _array(values, dtype=float):
+        return _FakeArray(float(value) for value in values)
 
-	def _dot(left, right):
-		return sum(float(a) * float(b) for a, b in zip(left, right))
+    def _dot(left, right):
+        return sum(float(a) * float(b) for a, b in zip(left, right))
 
-	numpy_mod.array = _array
-	numpy_mod.dot = _dot
-	numpy_mod.linalg = _FakeLinalg()
+    numpy_mod.array = _array
+    numpy_mod.dot = _dot
+    numpy_mod.linalg = _FakeLinalg()
 
-	identity_mod = types.ModuleType("azure.identity")
+    identity_mod = types.ModuleType("azure.identity")
 
-	class _FakeDefaultAzureCredential:
-		pass
+    class _FakeDefaultAzureCredential:
+        pass
 
-	identity_mod.DefaultAzureCredential = _FakeDefaultAzureCredential
+    identity_mod.DefaultAzureCredential = _FakeDefaultAzureCredential
 
-	cosmos_mod = types.ModuleType("azure.cosmos")
+    cosmos_mod = types.ModuleType("azure.cosmos")
 
-	class _FakeContainer:
-		def __init__(self):
-			self.created_items = []
-			self.upserted_items = []
+    class _FakeContainer:
+        def __init__(self):
+            self.created_items = []
+            self.upserted_items = []
 
-		def query_items(self, *ia, **ik):
-			return []
+        def query_items(self, *ia, **ik):
+            return []
 
-		def create_item(self, *, body, **ck):
-			self.created_items.append(body)
-			return body
+        def create_item(self, *, body, **ck):
+            self.created_items.append(body)
+            return body
 
-		def upsert_item(self, *, body, **ck):
-			self.upserted_items.append(body)
-			return body
+        def upsert_item(self, *, body, **ck):
+            self.upserted_items.append(body)
+            return body
 
-	class _FakeDatabaseClient:
-		def __init__(self):
-			self.container = _FakeContainer()
+    class _FakeDatabaseClient:
+        def __init__(self):
+            self.container = _FakeContainer()
 
-		def get_container_client(self, *args, **kwargs):
-			return self.container
+        def get_container_client(self, *args, **kwargs):
+            return self.container
 
-	class _FakeCosmosClient:
-		_last_database_client = _FakeDatabaseClient()
+    class _FakeCosmosClient:
+        _last_database_client = _FakeDatabaseClient()
 
-		def __init__(self, *args, **kwargs):
-			self.database_client = self._last_database_client
+        def __init__(self, *args, **kwargs):
+            self.database_client = self._last_database_client
 
-		def get_database_client(self, *args, **kwargs):
-			return self.database_client
+        def get_database_client(self, *args, **kwargs):
+            return self.database_client
 
-	cosmos_mod.CosmosClient = _FakeCosmosClient
+    cosmos_mod.CosmosClient = _FakeCosmosClient
 
-	functions_mod = types.ModuleType("azure.functions")
-	functions_mod.AuthLevel = types.SimpleNamespace(ANONYMOUS="anonymous")
-	functions_mod.HttpRequest = _FakeRequest
-	functions_mod.HttpResponse = _FakeHttpResponse
+    functions_mod = types.ModuleType("azure.functions")
+    functions_mod.AuthLevel = types.SimpleNamespace(ANONYMOUS="anonymous")
+    functions_mod.HttpRequest = _FakeRequest
+    functions_mod.HttpResponse = _FakeHttpResponse
 
-	durable_mod = types.ModuleType("azure.durable_functions")
-	durable_mod.DFApp = _FakeFunctionApp
-	durable_mod.DurableOrchestrationContext = object
-	durable_mod.DurableOrchestrationClient = _FakeDurableClient
-	durable_mod.Orchestrator = types.SimpleNamespace(create=lambda func: func)
+    durable_mod = types.ModuleType("azure.durable_functions")
+    durable_mod.DFApp = _FakeFunctionApp
+    durable_mod.DurableOrchestrationContext = object
+    durable_mod.DurableOrchestrationClient = _FakeDurableClient
+    durable_mod.Orchestrator = types.SimpleNamespace(create=lambda func: func)
 
-	sys.modules["azure"] = azure_pkg
-	sys.modules["numpy"] = numpy_mod
-	sys.modules["azure.identity"] = identity_mod
-	sys.modules["azure.cosmos"] = cosmos_mod
-	sys.modules["azure.functions"] = functions_mod
-	sys.modules["azure.durable_functions"] = durable_mod
+    sys.modules["azure"] = azure_pkg
+    sys.modules["numpy"] = numpy_mod
+    sys.modules["azure.identity"] = identity_mod
+    sys.modules["azure.cosmos"] = cosmos_mod
+    sys.modules["azure.functions"] = functions_mod
+    sys.modules["azure.durable_functions"] = durable_mod
 
 
 def test_start_orchestration_returns_check_status_response():
-	"""Verify the start endpoint returns the durable status response."""
-	_install_azure_stubs()
-	os.environ["COSMOSDB_ENDPOINT"] = "https://example-cosmos.documents.azure.com:443/"
-	os.environ["COSMOSDB_DATABASE"] = "policy_rag_db"
-	sys.modules.pop("function_app", None)
-	function_app = importlib.import_module("function_app")
+    """The HTTP route should return a standard durable check-status response."""
+    _install_azure_stubs()
+    os.environ["COSMOSDB_ENDPOINT"] = "https://example-cosmos.documents.azure.com:443/"
+    os.environ["COSMOSDB_DATABASE"] = "policy_rag_db"
+    sys.modules.pop("function_app", None)
+    function_app = importlib.import_module("function_app")
 
-	client = _FakeDurableClient()
-	request = _FakeRequest({"principal": {"role": "privacy-analyst"}, "cosmos_collection": "VectorDatabase"})
+    client = _FakeDurableClient()
+    request = _FakeRequest({"principal": {"role": "privacy-analyst"}, "cosmos_collection": "VectorDatabase"})
 
-	response = importlib.import_module("asyncio").run(function_app.start_orchestration(request, client))
+    response = importlib.import_module("asyncio").run(function_app.start_orchestration(request, client))
 
-	assert response == {"instanceId": "instance-123", "method": "POST"}
-	assert client.started[0] == "orchestrator"
-	assert "cosmos_endpoint" not in client.started[2]
-	assert "cosmos_key" not in client.started[2]
-	assert "database" not in client.started[2]
+    assert response == {"instanceId": "instance-123", "method": "POST"}
+    assert client.started[0] == "orchestrator"
+    assert "cosmos_endpoint" not in client.started[2]
+    assert "cosmos_key" not in client.started[2]
+    assert "database" not in client.started[2]
 
 
 def test_start_orchestration_accepts_notebook_style_payload():
-	"""Verify the entrypoint still forwards the notebook-style request payload intact."""
-	_install_azure_stubs()
-	os.environ["COSMOSDB_ENDPOINT"] = "https://example-cosmos.documents.azure.com:443/"
-	sys.modules.pop("function_app", None)
-	function_app = importlib.import_module("function_app")
+    """Notebook-style requests should be forwarded without losing their fields."""
+    _install_azure_stubs()
+    os.environ["COSMOSDB_ENDPOINT"] = "https://example-cosmos.documents.azure.com:443/"
+    sys.modules.pop("function_app", None)
+    function_app = importlib.import_module("function_app")
 
-	client = _FakeDurableClient()
-	request = _FakeRequest({
-		"principal": {
-			"userId": "notebook-user",
-			"role": "privacy-compliance-analyst",
-			"declaredIntent": "compliance_review",
-		},
-		"query_text": "Summarise the relevant privacy review emails",
-		"action": "summarise",
-		"odrl_policy": {"uid": "policy-test"},
-	})
+    client = _FakeDurableClient()
+    request = _FakeRequest({
+        "principal": {
+            "userId": "notebook-user",
+            "role": "privacy-compliance-analyst",
+            "declaredIntent": "compliance_review",
+        },
+        "query_text": "Summarise the relevant privacy review emails",
+        "action": "summarise",
+        "odrl_policy": {"uid": "policy-test"},
+    })
 
-	response = importlib.import_module("asyncio").run(function_app.start_orchestration(request, client))
+    response = importlib.import_module("asyncio").run(function_app.start_orchestration(request, client))
 
-	assert response == {"instanceId": "instance-123", "method": "POST"}
-	assert client.started[2]["principal"]["role"] == "privacy-compliance-analyst"
-	assert client.started[2]["query_text"] == "Summarise the relevant privacy review emails"
-	assert client.started[2]["action"] == "summarise"
-	assert client.started[2]["odrl_policy"]["uid"] == "policy-test"
-
-# Rest of tests unchanged — copied from original tests/test_function_app.py
+    assert response == {"instanceId": "instance-123", "method": "POST"}
+    assert client.started[2]["principal"]["role"] == "privacy-compliance-analyst"
+    assert client.started[2]["query_text"] == "Summarise the relevant privacy review emails"
+    assert client.started[2]["action"] == "summarise"
+    assert client.started[2]["odrl_policy"]["uid"] == "policy-test"

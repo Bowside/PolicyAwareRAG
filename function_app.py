@@ -1,3 +1,12 @@
+"""Azure Functions entry point for the PolicyAwareRAG Durable orchestration.
+
+This module contains the public HTTP trigger used to start orchestrations and the
+activity triggers that delegate to the implementation functions in
+``activities.py``. Each trigger is intentionally thin: it validates input and
+forwards execution to the orchestrator or implementation layer without changing
+application behavior.
+"""
+
 import azure.durable_functions as df
 import azure.functions as func
 
@@ -20,46 +29,48 @@ def orchestrator(context: df.DurableOrchestrationContext):
         context: Durable Functions orchestration context for the current instance.
 
     Returns:
-        The orchestration result returned by the shared orchestrator function.
+        object: The orchestration result returned by the shared orchestrator function.
     """
     return orchestrator_function(context)
 
 
 @app.activity_trigger(input_name="req")
 def GenerateResponseActivity(req: dict) -> str:
-    """Generate a policy-aware response for the given activity payload.
+    """Generate a policy-aware response from the activity payload.
 
     Args:
-        req: Activity input payload containing query and retrieval context.
+        req: Activity payload containing the query, principal, policy evaluation,
+            and retrieved context.
 
     Returns:
-        The generated response text.
+        str: Generated response text.
     """
     return generate_response_impl(req)
 
 
 @app.activity_trigger(input_name="req")
 def GenerateRedactedResponseActivity(req: dict) -> str:
-    """Generate a redacted policy-aware response for the given payload.
+    """Generate a safely redacted response from the activity payload.
 
     Args:
-        req: Activity input payload containing query and retrieval context.
+        req: Activity payload containing the query and retrieved context for a
+            redaction-restricted response.
 
     Returns:
-        The generated redacted response text.
+        str: Redacted response text.
     """
     return generate_redacted_response_impl(req)
 
 
 @app.activity_trigger(input_name="event")
 def StoreAuditEventActivity(event: dict) -> dict:
-    """Persist an audit event for the current orchestration.
+    """Persist an audit event for the active orchestration.
 
     Args:
         event: Audit event payload to store in Cosmos DB.
 
     Returns:
-        A status dictionary describing the storage result.
+        dict: Status dictionary describing the storage result.
     """
     return store_audit_event_impl(event)
 
@@ -69,12 +80,16 @@ def StoreAuditEventActivity(event: dict) -> dict:
 async def start_orchestration(req: func.HttpRequest, client: df.DurableOrchestrationClient) -> func.HttpResponse:
     """Start a new orchestration instance from an HTTP request.
 
+    The HTTP trigger validates the incoming JSON payload and forwards it to the
+    durable orchestrator. It ensures the required top-level request fields are set
+    before starting the instance.
+
     Args:
         req: Incoming HTTP request containing the orchestration payload.
-        client: Durable orchestration client used to start the instance.
+        client: Durable orchestration client used to create the new instance.
 
     Returns:
-        The standard Durable Functions status response.
+        func.HttpResponse: Standard Durable Functions status response.
     """
     try:
         payload = req.get_json()

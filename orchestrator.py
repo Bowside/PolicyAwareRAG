@@ -1,24 +1,42 @@
+"""Durable Functions orchestration for policy-aware retrieval and compliance.
+
+This module coordinates the end-to-end request flow:
+- validate the ODRL policy against the principal's role and declared intent
+- detect count-style sender queries and handle them directly
+- retrieve candidate email chunks using vector similarity and security filters
+- evaluate the retrieval through the multi-agent compliance graph
+- generate a response, run the compliance guard, and optionally trigger redaction
+- emit a structured audit event for downstream monitoring and review
+"""
+
 import logging
+import os
+import re
+import uuid
+from datetime import datetime, timezone
+
 import azure.durable_functions as df
+
+from compliance_guard import compliance_guard
 from graph_state import MultiAgentGraph, permissive_agent, restrictive_agent
 from policy_validator import PolicyPurposeValidator
 from retriever import ConflictAwareRetriever
-from compliance_guard import compliance_guard
-import uuid
-from datetime import datetime, timezone
-import os
-import re
 
 
 def _build_query_embedding(query_text: str, query_embedding: list) -> list:
-    """Return a usable query embedding, computing one if needed.
+    """Return a usable query embedding, generating one when the caller provides none.
+
+    Several orchestration paths accept an embedding from the caller. When the value
+    is missing or malformed, this function falls back to the configured sentence
+    transformer model and uses it to encode the query text.
 
     Args:
-        query_text: Raw user query text.
-        query_embedding: Caller-provided embedding candidate.
+        query_text: Raw user query text to encode.
+        query_embedding: Caller-provided embedding candidate, if any.
 
     Returns:
-        A list of embedding floats suitable for retrieval.
+        list: Embedding floats suitable for vector retrieval, or an empty list when
+            generation fails.
     """
     if query_embedding and len(query_embedding) >= 16:
         return query_embedding
@@ -46,10 +64,11 @@ def _format_reasoning_trail(reasoning: list[str]) -> str:
     """Join a reasoning trail into a compact audit string.
 
     Args:
-        reasoning: Ordered list of reasoning statements.
+        reasoning: Ordered list of reasoning statements collected from policy
+            evaluation and decisioning.
 
     Returns:
-        A semicolon-separated reasoning string.
+        str: Semicolon-separated reasoning string for storage in the audit payload.
     """
     if not reasoning:
         return ""
@@ -57,15 +76,15 @@ def _format_reasoning_trail(reasoning: list[str]) -> str:
 
 
 def _map_guard_status(guard_status: str, outcome_status: str, enforcement_action_type: str) -> str:
-    """Map guard and outcome state to the audit status label.
+    """Map guard and outcome state to the audit-facing compliance status.
 
     Args:
         guard_status: Status returned by the compliance guard.
-        outcome_status: Final payload status.
-        enforcement_action_type: Enforcement action chosen by the orchestrator.
+        outcome_status: Final payload status from the orchestrated outcome.
+        enforcement_action_type: Enforcement action selected by the orchestrator.
 
     Returns:
-        The audit-facing compliance guard status.
+        str: Normalized compliance status label for the audit record.
     """
     if enforcement_action_type == "Partial_Redaction":
         return "Sanitized"
@@ -96,30 +115,34 @@ def build_audit_event(
     security_filters: dict | None = None,
     decision_graph: dict | None = None,
 ) -> dict:
-    """Build the audit event payload for a completed orchestration.
+    """Build the structured audit event payload for a completed orchestration.
+
+    The audit event captures the request context, evaluated policy state,
+    enforcement decision, and final user-facing outcome. It is designed to be
+    written to the Cosmos audit container via the StoreAuditEventActivity activity.
 
     Args:
-        transaction_id: Unique identifier for the request.
-        start_time: Orchestration start time.
-        end_time: Orchestration end time.
-        duration_seconds: Total orchestration duration.
-        principal: Request principal details.
-        odrl_policy: Policy used to evaluate the request.
-        query_text: Original user query text.
-        query_embedding: Embedding used for retrieval.
-        action: Requested action.
-        cosmos_collection: Cosmos DB container name.
-        retrieved: Retrieved chunks used by the orchestration.
-        eval_detail: Policy evaluation detail record.
-        allowed: Whether the policy allowed the request.
-        guard: Compliance guard result.
-        enforcement_action_type: Final enforcement decision.
-        final_payload: Final user-facing response payload.
-        security_filters: Policy-derived retrieval filters.
+        transaction_id: Unique request identifier.
+        start_time: Orchestration start time in UTC.
+        end_time: Orchestration completion time in UTC.
+        duration_seconds: End-to-end orchestration duration in seconds.
+        principal: Principal details such as userId, role, and declaredIntent.
+        odrl_policy: ODRL policy that was evaluated for the request.
+        query_text: Original query text submitted by the caller.
+        query_embedding: Embedding values used in vector retrieval.
+        action: Requested action type (for example, summarise or count).
+        cosmos_collection: Cosmos DB collection name used during retrieval.
+        retrieved: Retrieved documents or chunks consumed during the request.
+        eval_detail: Policy evaluation result and reasoning details.
+        allowed: Whether the policy allowed the request at validation time.
+        guard: Compliance guard status returned after response generation.
+        enforcement_action_type: Final enforcement decision (Allow, Deny, Partial_Redaction).
+        final_payload: Final response payload returned to the user.
+        security_filters: Security filters derived from the policy.
         decision_graph: Multi-agent decision graph result.
 
     Returns:
-        A dictionary shaped for audit storage.
+        dict: Structured audit event payload suitable for storage.
     """
     matched_rules = eval_detail.get("matchedRules") or []
     matched_policy_uid = matched_rules[0] if matched_rules else odrl_policy.get("uid", "")
@@ -157,7 +180,6 @@ def build_audit_event(
             "complianceGuardStatus": _map_guard_status(guard.get("status", ""), outcome_status, enforcement_action_type),
         },
         "decisionGraph": decision_graph or {},
-        "retrieved": retrieved,
         "outcome": final_payload,
     }
 
@@ -166,7 +188,7 @@ def _build_no_results_payload() -> dict:
     """Build the standard payload returned when retrieval finds nothing.
 
     Returns:
-        A user-facing payload indicating no relevant context was retrieved.
+        dict: User-facing payload indicating no relevant context was found.
     """
     return {
         "status": "ok",
@@ -184,11 +206,16 @@ _COUNT_QUERY_PATTERNS = (
 def _extract_sender_from_count_query(query_text: str) -> str | None:
     """Extract a sender name from a natural-language count query.
 
+    This helper recognizes count-style prompts such as "How many emails from Jane
+    Doe?" and extracts the sender portion so it can be passed to the Cosmos
+    sender-count query path.
+
     Args:
         query_text: Natural-language query text.
 
     Returns:
-        The extracted sender text, or ``None`` when the query is unsupported.
+        str | None: Extracted sender relevant to counting, or None when the query
+            is not a supported sender-count pattern.
     """
     normalized_query = " ".join((query_text or "").strip().split())
     for pattern in _COUNT_QUERY_PATTERNS:
@@ -204,13 +231,14 @@ def _extract_sender_from_count_query(query_text: str) -> str | None:
 
 
 def _format_sender_label(sender_query: str) -> str:
-    """Format a sender query into a display label.
+    """Format a sender query into a display-friendly label.
 
     Args:
         sender_query: Sender text extracted from the query.
 
     Returns:
-        A display-friendly sender label.
+        str: Title-cased label for output, or the original email address when an
+            address-like string is provided.
     """
     sender_query = (sender_query or "").strip()
     if "@" in sender_query:
@@ -221,24 +249,31 @@ def _format_sender_label(sender_query: str) -> str:
 def _evaluate_multi_agent_graph(retrieved: list[dict], eval_detail: dict) -> dict:
     """Run the multi-agent policy decision graph over retrieved chunks.
 
+    The graph aggregates restrictive and permissive signals to decide whether the
+    retrieved context is allowed, partially redacted, or denied.
+
     Args:
         retrieved: Retrieved chunks to evaluate.
         eval_detail: Policy evaluation detail record.
 
     Returns:
-        The multi-agent decision graph output.
+        dict: Multi-agent decision graph output with decision and reasoning.
     """
     graph = MultiAgentGraph(agents=[restrictive_agent, permissive_agent])
     return graph.evaluate(retrieved, eval_detail)
 
 def orchestrator_function(context: df.DurableOrchestrationContext):
-    """Run the durable orchestration for policy evaluation and response generation.
+    """Run the durable orchestration for policy-aware response generation.
+
+    This orchestration validates policy intent, resolves sender-count shortcuts,
+    retrieves relevant content, invokes the multi-agent decision graph, and then
+    produces either an allowed response, a redacted response, or a denial.
 
     Args:
         context: Durable Functions orchestration context for the current instance.
 
     Returns:
-        The final orchestration payload describing allow, deny, or redaction outcomes.
+        dict: Final orchestrated payload describing allow, deny, or redaction.
     """
     input_payload = context.get_input() or {}
     transaction_id = str(uuid.uuid4())

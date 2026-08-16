@@ -1,3 +1,10 @@
+"""Unit tests covering the orchestrator workflow and embedding fallback logic.
+
+These tests validate the durable orchestration behavior when policy evaluation
+fails or succeeds, and confirm that short query vectors are expanded to the
+configured embedding dimensionality before retrieval.
+"""
+
 import importlib
 import sys
 import types
@@ -6,6 +13,7 @@ import pytest
 
 
 def _install_azure_stubs():
+	"""Register minimal Azure SDK stubs needed for importing the orchestrator module."""
 	azure_pkg = types.ModuleType("azure")
 	azure_pkg.__path__ = []
 
@@ -38,6 +46,8 @@ def _install_azure_stubs():
 
 
 class _FakeContext:
+	"""Simple durable context stub that records activity calls for the orchestrator tests."""
+
 	def __init__(self, payload):
 		self._payload = payload
 		self.activity_calls = []
@@ -51,6 +61,7 @@ class _FakeContext:
 
 
 def _load_orchestrator():
+	"""Import the orchestrator module with fresh Azure stubs for each test case."""
 	_install_azure_stubs()
 	for module_name in ["orchestrator", "retriever", "graph_state", "policy_validator"]:
 		sys.modules.pop(module_name, None)
@@ -58,6 +69,7 @@ def _load_orchestrator():
 
 
 def test_orchestrator_denies_before_retrieval_when_policy_validator_declines(monkeypatch):
+	"""The orchestration should stop before retrieval when policy validation denies the request."""
 	orchestrator = _load_orchestrator()
 
 	class _FailingRetriever:
@@ -99,6 +111,7 @@ def test_orchestrator_denies_before_retrieval_when_policy_validator_declines(mon
 
 
 def test_orchestrator_retrieval_uses_empty_security_filters(monkeypatch):
+	"""An approved request should still pass an empty security filter set to the retriever."""
 	orchestrator = _load_orchestrator()
 	retriever_calls = {}
 
@@ -151,6 +164,7 @@ def test_orchestrator_retrieval_uses_empty_security_filters(monkeypatch):
 
 
 def test_build_query_embedding_recomputes_short_vectors(monkeypatch):
+	"""Short vectors should be padded to the configured embedding length before use."""
 	orchestrator = _load_orchestrator()
 
 	class _FakeSentenceTransformer:

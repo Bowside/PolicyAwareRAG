@@ -1,3 +1,15 @@
+"""Orchestration activities for Policy-Aware RAG gateway.
+
+Implements Durable Functions activities that are called by the orchestrator:
+- Configuration loading (_get_cosmos_config, _get_ai_foundry_config)
+- Context formatting (_build_context_snippets)
+- AI service communication (_chat_with_ai_foundry)
+- Policy-aware response generation (GenerateResponseActivity, GenerateRedactedResponseActivity)
+- Audit event persistence (StoreAuditEventActivity)
+
+Activities are unit-level operations designed for resilience, retryability, and
+Durable Functions checkpointing. Each activity should be idempotent where possible.
+"""
 import json
 import logging
 import os
@@ -15,11 +27,22 @@ AI_FOUNDRY_KEY = os.environ.get("AI_FOUNDRY_KEY")
 AI_FOUNDRY_MODEL = os.environ.get("AI_FOUNDRY_MODEL")
 
 def _get_cosmos_config() -> tuple[str, str, str]:
-    """Load Cosmos connection settings from the environment."""
+    """Load Cosmos DB connection settings from the environment.
+    
+    Reads required connection parameters from environment variables:
+    COSMOSDB_ENDPOINT, COSMOSDB_DATABASE, COSMOSDB_KEY.
+    
+    Returns:
+        tuple: (endpoint, database, key) for Cosmos DB connection.
+    
+    Raises:
+        RuntimeError: If any required configuration is missing.
+    """
     endpoint = COSMOS_ENDPOINT
     database = COSMOS_DATABASE
     key = COSMOS_KEY
 
+    # Validate that all required configuration is present
     missing = [
         name 
         for name, value in (
@@ -36,9 +59,13 @@ def _get_cosmos_config() -> tuple[str, str, str]:
 
 def _get_ai_foundry_config() -> tuple[str, str, str]:
     """Load the AI Foundry endpoint, key, and model from the environment.
+    
+    Reads Azure AI Foundry configuration from environment variables:
+    AI_FOUNDRY_ENDPOINT, AI_FOUNDRY_KEY, AI_FOUNDRY_MODEL.
+    These are used for chat completion requests in response generation.
 
     Returns:
-        A tuple of ``(endpoint, api_key, model)`` values.
+        tuple: (endpoint, api_key, model) for AI Foundry service.
 
     Raises:
         RuntimeError: If any required setting is missing.
@@ -47,6 +74,7 @@ def _get_ai_foundry_config() -> tuple[str, str, str]:
     api_key = AI_FOUNDRY_KEY
     model = AI_FOUNDRY_MODEL
 
+    # Validate that all required configuration is present
     missing = [
         name
         for name, value in (
@@ -64,17 +92,24 @@ def _get_ai_foundry_config() -> tuple[str, str, str]:
 
 def _build_context_snippets(retrieved: list[dict]) -> str:
     """Format retrieved records into prompt-ready context snippets.
+    
+    Transforms raw retrieved documents/chunks into readable snippets for the AI
+    model prompt. Extracts key fields (subject, from, to, date) as headers when
+    available, includes content, and falls back to field-value listing if needed.
 
     Args:
-        retrieved: Retrieved documents or chunks to include in the prompt.
+        retrieved: Retrieved documents or chunks to include in the prompt. Each
+                  dict should contain 'content', 'id', and optional metadata fields.
 
     Returns:
-        A newline-separated string containing compact context snippets.
+        str: Newline-separated string containing formatted context snippets ready
+             for inclusion in a model prompt. Returns fallback text if no content.
     """
     snippets = []
     for item in retrieved:
         content = (item.get("content") or item.get("body") or "").strip()
         if content:
+            # Extract email-like headers (subject, from, to, date) if present
             header_parts = []
             for field_name in ("subject", "from", "to", "date"):
                 value = (item.get(field_name) or "").strip()
@@ -86,6 +121,7 @@ def _build_context_snippets(retrieved: list[dict]) -> str:
             snippets.append(f"{prefix} {header} {content}".strip())
             continue
 
+        # Fallback: list all non-empty fields if no content field
         fallback_fields = []
         for field_name, value in item.items():
             if value in (None, "", [], {}):
@@ -98,16 +134,22 @@ def _build_context_snippets(retrieved: list[dict]) -> str:
 
 def _chat_with_ai_foundry(system_prompt: str, user_prompt: str) -> str:
     """Send a chat completion request to AI Foundry and return the response.
+    
+    Makes a synchronous HTTP POST request to Azure AI Foundry's chat completions
+    endpoint. Constructs request with system and user prompts, temperature=0.2
+    for focused responses, and max_tokens=600 for response length control.
 
     Args:
-        system_prompt: System prompt to use for the completion request.
-        user_prompt: User prompt to send to the model.
+        system_prompt: System role prompt defining model behavior and constraints.
+                      Guides the model to act as policy-aware RAG service.
+        user_prompt: User request including query, context, and policy evaluation.
 
     Returns:
-        The non-empty response content from AI Foundry.
+        str: Non-empty response content from the AI Foundry model.
 
     Raises:
-        RuntimeError: If the AI Foundry request fails or returns no content.
+        RuntimeError: If the AI Foundry request fails (HTTP error, no choices,
+                     no content in response, or timeout).
     """
     endpoint, api_key, model = _get_ai_foundry_config()
     request_url = endpoint.rstrip("/") + "/chat/completions?api-version=2024-05-01-preview"
@@ -117,8 +159,8 @@ def _chat_with_ai_foundry(system_prompt: str, user_prompt: str) -> str:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "temperature": 0.2,
-        "max_tokens": 600,
+        "temperature": 0.2,  # Lower temperature for more focused, deterministic responses
+        "max_tokens": 600,   # Limit response length to avoid excessive content
     }
     request = urllib.request.Request(
         request_url,
@@ -128,12 +170,14 @@ def _chat_with_ai_foundry(system_prompt: str, user_prompt: str) -> str:
     )
 
     try:
+        # Execute HTTP request with 60-second timeout
         with urllib.request.urlopen(request, timeout=60) as response:
             payload = json.load(response)
     except urllib.error.HTTPError as error:
         error_body = error.read().decode("utf-8", errors="ignore")
         raise RuntimeError(f"AI Foundry request failed with HTTP {error.code}: {error_body}") from error
 
+    # Extract and validate response content
     choices = payload.get("choices", [])
     if not choices:
         raise RuntimeError("AI Foundry response did not include any choices.")
@@ -146,13 +190,27 @@ def _chat_with_ai_foundry(system_prompt: str, user_prompt: str) -> str:
     return content
 
 def GenerateResponseActivity(req: dict) -> str:
-    """Generate a model response for the retrieved request context.
+    """Generate a policy-aware model response for the retrieved request context.
+    
+    Orchestration activity that constructs a carefully crafted prompt including:
+    - Retrieved context chunks formatted as snippets
+    - Principal role and declared intent for context
+    - Policy evaluation details for compliance awareness
+    - System prompt guiding the model to respect policies
+    
+    Uses AI Foundry to generate a response that is both useful and compliant with
+    the evaluated policy. Falls back to appropriate error messages on failure.
 
     Args:
-        req: Activity input containing the query context and retrieved chunks.
+        req: Activity input dict with keys:
+            - retrieved: List of retrieved document chunks
+            - query_text: Original user query
+            - policy_evaluation: Dict with policy evaluation results (satisfied, constraints, etc.)
+            - principal: Dict with role and declaredIntent
+            - action: Requested action (e.g., 'summarise', 'export')
 
     Returns:
-        A policy-aware model response generated by AI Foundry.
+        str: Policy-aware response from AI Foundry, or error message if generation fails.
     """
     retrieved = req.get("retrieved", [])
     query_text = req.get("query_text") or req.get("query") or "Summarise the retrieved context for the approved user."
@@ -163,6 +221,7 @@ def GenerateResponseActivity(req: dict) -> str:
     if not retrieved:
         return "No relevant context was retrieved for this request."
 
+    # System prompt instructs model on policy-aware RAG behavior
     system_prompt = (
         "You are the policy-aware RAG spokesperson. Answer only using the retrieved context. "
         "Apply the policy evaluation to the answer, redact any prohibited PII or sensitive details, "
@@ -170,6 +229,7 @@ def GenerateResponseActivity(req: dict) -> str:
         "or raw security metadata. If the answer cannot be supported by the context, reply exactly: "
         "No relevant context was retrieved for this request."
     )
+    # User prompt includes all context for policy-aware decision making
     user_prompt = (
         f"User request: {query_text}\n"
         f"Requested action: {action}\n"
@@ -186,12 +246,24 @@ def GenerateResponseActivity(req: dict) -> str:
 
 def GenerateRedactedResponseActivity(req: dict) -> str:
     """Build a redacted response from the retrieved chunks.
+    
+    Orchestration activity for partial redaction enforcement action. Takes retrieved
+    chunks and asks AI Foundry to generate a concise response while:
+    - Truncating chunk content to first 200 characters (redaction preview)
+    - Excluding raw PII or prohibited sensitive details
+    - Preserving utility and meaning of the response
+    
+    Used when policy evaluation allows access but requires content filtering to
+    protect sensitive fields. Model is instructed to omit any mention of redacted
+    content to avoid information leakage about what was hidden.
 
     Args:
-        req: Activity input containing a ``retrieved`` list of chunk dictionaries.
+        req: Activity input dict with keys:
+            - retrieved: List of retrieved document chunks (will be truncated)
+            - query_text: Original user query
 
     Returns:
-        A policy-aware redacted response generated by AI Foundry.
+        str: Concise redacted response from AI Foundry, or error message if generation fails.
     """
     retrieved = req.get("retrieved", [])
     query_text = req.get("query_text") or req.get("query") or "Summarise the approved excerpts."
@@ -199,6 +271,7 @@ def GenerateRedactedResponseActivity(req: dict) -> str:
     if not retrieved:
         return "No relevant context was retrieved for this request."
 
+    # Truncate chunks to preview only (first 200 chars) for redaction scenario
     redacted_chunks = []
     for item in retrieved:
         content = (item.get("content") or "").strip()
@@ -206,6 +279,7 @@ def GenerateRedactedResponseActivity(req: dict) -> str:
             continue
         redacted_chunks.append({"id": item.get("id", "chunk"), "content": content[:200]})
 
+    # System prompt for redacted response generation
     system_prompt = (
         "You are the policy-aware RAG spokesperson. Produce a concise, useful answer using only the redacted excerpts. "
         "Preserve meaning, redact prohibited PII or sensitive details, and do not mention hidden content or omitted details. "
@@ -223,12 +297,25 @@ def GenerateRedactedResponseActivity(req: dict) -> str:
 
 def StoreAuditEventActivity(event: dict) -> dict:
     """Persist an audit event to the Cosmos DB audit container.
+    
+    Durable Functions activity that safely stores audit events in Cosmos DB.
+    Designed to be retryable - uses upsert semantics to handle duplicate delivery.
+    Includes comprehensive error handling and logging for compliance auditing.
 
     Args:
-        event: Audit event payload containing Cosmos endpoint and event fields.
+        event: Audit event payload dict with keys:
+            - transactionId: Unique transaction identifier (becomes document id)
+            - timestamp: When the event occurred
+            - principal: Principal context (role, userId)
+            - policyEvaluation: Policy evaluation results
+            - enforcementAction: Enforcement decision taken
+            - Other fields: optional metadata
 
     Returns:
-        A status dictionary indicating success, missing configuration, or error details.
+        dict: Status response with keys:
+            - status: 'ok' on success, 'missing_id' if no transactionId,
+                     'error' if exception occurred
+            - error: (optional) error message string if status='error'
     """
     try:
         endpoint, database, credential = _get_cosmos_config()
@@ -236,10 +323,12 @@ def StoreAuditEventActivity(event: dict) -> dict:
         db = client.get_database_client(database)
         container = db.get_container_client("AuditStorage")
         event_doc = event.copy()
+        # Use transactionId as document ID for easy lookup and correlation
         event_doc.setdefault("id", event_doc.get("transactionId"))
         if not event_doc.get("id"):
             return {"status": "missing_id"}
 
+        # Upsert allows safe replay (idempotent) - re-storing same event overwrites
         container.upsert_item(body=event_doc)
         return {"status": "ok"}
     except Exception as e:

@@ -1,3 +1,9 @@
+"""Pytest configuration for unit tests in the PolicyAwareRAG project.
+
+This file ensures the repository root is available on ``sys.path`` so the test
+suite can import application modules without requiring installation.
+"""
+
 import pathlib
 import sys
 

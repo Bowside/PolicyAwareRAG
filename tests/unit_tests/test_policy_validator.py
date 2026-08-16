@@ -1,3 +1,9 @@
+"""Unit tests for the ODRL policy validator and policy-derived security constraints.
+
+These checks exercise allow/deny decisions, assignee-role gating, legacy-policy
+rejection, and the derived security filter payload used by retrieval.
+"""
+
 from policy_validator import PolicyPurposeValidator
 
 
