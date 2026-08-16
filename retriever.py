@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 from typing import Any, Dict, List, Optional
@@ -5,22 +6,56 @@ from typing import Any, Dict, List, Optional
 from azure.cosmos import CosmosClient
 
 class ConflictAwareRetriever:
-    def __init__(self, cosmos_endpoint: str, database_name: str, container_name: str, cosmos_key: Optional[str] = None):
+    def __init__(self, container_name: Optional[str] = None):
         """Create a retriever backed by a Cosmos DB container.
 
         Args:
-            cosmos_endpoint: Cosmos DB account endpoint URI.
-            database_name: Database name containing the vector container.
-            container_name: Container name used for retrieval.
+            cosmos_endpoint: Cosmos DB account endpoint URI. Falls back to the COSMOSDB_ENDPOINT environment variable.
+            database_name: Database name containing the vector container. Falls back to the COSMOSDB_DATABASE environment variable.
+            container_name: Container name used for retrieval. Falls back to EnronEmailVectorStore.
             cosmos_key: Cosmos DB account key. Falls back to the COSMOS_KEY environment variable.
         """
-        credential = cosmos_key or os.environ.get("COSMOS_KEY")
+        cosmos_endpoint = os.environ.get("COSMOSDB_ENDPOINT")
+        database_name = os.environ.get("COSMOSDB_DATABASE")
+        container_name = container_name or os.environ.get("COSMOSDB_ENRON_COLLECTION")
+        credential = os.environ.get("COSMOSDB_KEY")
+        if not cosmos_endpoint:
+            raise ValueError("COSMOSDB_ENDPOINT must be provided to initialize the Cosmos client.")
+        if not database_name:
+            raise ValueError("COSMOSDB_DATABASE must be provided to initialize the Cosmos client.")
         if not credential:
             raise ValueError("COSMOS_KEY must be provided to initialize the Cosmos client.")
 
         self.client = CosmosClient(url=cosmos_endpoint, credential=credential)
         self.db = self.client.get_database_client(database_name)
         self.container = self.db.get_container_client(container_name)
+
+    @staticmethod
+    def _policy_role_allows(item: Dict[str, Any], active_policy_role: Any) -> bool:
+        """Return True when a result should be kept for the active policy role.
+
+        Records without ``securityMetadata`` are always returned. Records with a
+        ``securityMetadata.policyRole`` list must match the active role exactly.
+        """
+        metadata = item.get("securityMetadata") or {}
+        policy_roles = metadata.get("policyRole")
+
+        if policy_roles in (None, "", [], {}):
+            return True
+
+        if not active_policy_role:
+            return False
+
+        if isinstance(policy_roles, str):
+            candidates = [policy_roles]
+        elif isinstance(policy_roles, list):
+            candidates = policy_roles
+        else:
+            candidates = [str(policy_roles)]
+
+        normalized_active = str(active_policy_role).strip().lower()
+        normalized_candidates = {str(candidate).strip().lower() for candidate in candidates if str(candidate).strip()}
+        return normalized_active in normalized_candidates
 
     def retrieve(self, query_embedding: List[float], security_filters: Dict[str, Any], top_k: int = 10) -> List[Dict]:
         """Retrieve the highest-scoring chunks that satisfy the security filters.
@@ -63,9 +98,14 @@ class ConflictAwareRetriever:
                 parameters=params, 
                 enable_cross_partition_query=True
             ))
-            return items
+            active_policy_role = security_filters.get("policyRole") or security_filters.get("role")
+            filtered_items = [
+                item for item in items
+                if self._policy_role_allows(item, active_policy_role)
+            ]
+            logging.info("Cosmos vector query returned %s item(s)", len(filtered_items))
+            return filtered_items
         except Exception as e:
-            import logging
             logging.error(f"Cosmos DB vector search failed: {e}")
             logging.debug(f"Query: {query}")
             logging.debug(f"Parameters count: {len(params)}")
