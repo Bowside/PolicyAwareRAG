@@ -23,15 +23,23 @@ def _build_query_embedding(query_text: str, query_embedding: list) -> list:
     if query_embedding and len(query_embedding) >= 16:
         return query_embedding
 
+    if query_embedding:
+        logging.warning(
+            "Ignoring malformed query embedding of length %s; generating a fresh embedding for vector search.",
+            len(query_embedding),
+        )
+
     try:
         from sentence_transformers import SentenceTransformer
         model_name = os.environ.get("EMBEDDING_MODEL")
+        if not model_name:
+            raise ValueError("EMBEDDING_MODEL is not configured.")
         model = SentenceTransformer(model_name)
         embedding = model.encode([query_text or ""], normalize_embeddings=False)[0]
         return embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
     except Exception as exc:
-        logging.warning("Falling back to caller-provided query embedding: %s", exc)
-        return query_embedding or []
+        logging.warning("Unable to build a valid query embedding for Cosmos retrieval: %s", exc)
+        return []
 
 
 def _format_reasoning_trail(reasoning: list[str]) -> str:

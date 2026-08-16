@@ -148,3 +148,22 @@ def test_orchestrator_retrieval_uses_empty_security_filters(monkeypatch):
 	assert result["status"] == "ok"
 	assert retriever_calls["security_filters"] == {}
 	assert retriever_calls["top_k"] == 10
+
+
+def test_build_query_embedding_recomputes_short_vectors(monkeypatch):
+	orchestrator = _load_orchestrator()
+
+	class _FakeSentenceTransformer:
+		def __init__(self, model_name):
+			self.model_name = model_name
+
+		def encode(self, texts, normalize_embeddings=False):
+			assert texts == ["Summarise the privacy review emails"]
+			return [[0.1] * 384]
+
+	monkeypatch.setitem(sys.modules, "sentence_transformers", types.SimpleNamespace(SentenceTransformer=_FakeSentenceTransformer))
+	monkeypatch.setenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+	result = orchestrator._build_query_embedding("Summarise the privacy review emails", [0.1, 0.2, 0.3])
+	assert len(result) == 384
+	assert result[0] == 0.1
+	assert result[-1] == 0.1
