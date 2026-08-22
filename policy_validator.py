@@ -162,6 +162,29 @@ class PolicyPurposeValidator:
         return aliases.get(normalized, normalized)
 
     @staticmethod
+    def _role_inherits(principal_role: str, assignee_role: str) -> bool:
+        """Return whether principal_role inherits permissions of assignee_role.
+
+        Args:
+            principal_role: Canonical principal role token.
+            assignee_role: Canonical assignee role token.
+
+        Returns:
+            bool: True when principal_role is configured as a superset role.
+        """
+        inheritance_map = {
+            # Admins can operate under constrained policies assigned to narrower roles.
+            "pii-data-governance-admin": {
+                "pii-data-governance-admin",
+                "privacy-compliance-analyst",
+                "customer-support-specialist",
+                "business-observer",
+            }
+        }
+        inherited_roles = inheritance_map.get(principal_role, {principal_role})
+        return assignee_role in inherited_roles
+
+    @staticmethod
     def _normalize_policy_value(value: str | None) -> str:
         """Normalize a policy IRI or token to its terminal segment.
 
@@ -266,6 +289,9 @@ class PolicyPurposeValidator:
 
         if principal_token and principal_token == assignee_token:
             return True, "principal role matched assignee"
+
+        if principal_token and assignee_token and self._role_inherits(principal_token, assignee_token):
+            return True, "principal role inherited assignee permissions"
 
         return False, "principal role did not match assignee"
 

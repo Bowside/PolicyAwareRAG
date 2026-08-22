@@ -18,3 +18,5 @@ __pycache__/
 .vscode/
 .env
 .local.settings.json
+
+.venv

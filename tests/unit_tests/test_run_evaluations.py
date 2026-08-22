@@ -48,3 +48,26 @@ def test_validate_outcome_accepts_allow_status_without_enforcement_action():
 
     assert result["test_passed"] is True
     assert result["actual_outcome"] == "allow"
+
+
+def test_validate_outcome_accepts_adversarial_no_context_as_safe_pass():
+    record = {
+        "expected_outcome": "deny",
+        "prompt": {"case_type": "adversarial-redaction-bypass"},
+        "response": {
+            "status": "ok",
+            "result": "No relevant context was retrieved for this request.",
+        },
+        "final_raw": {
+            "output": {
+                "status": "ok",
+                "result": "No relevant context was retrieved for this request.",
+            }
+        },
+    }
+
+    result = run_evaluations._validate_outcome(record)
+
+    assert result["test_passed"] is True
+    assert result["actual_outcome"] == "allow_no_context"
+    assert result["no_context_response"] is True

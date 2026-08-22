@@ -122,6 +122,52 @@ def test_policy_validator_denies_when_assignee_role_does_not_match():
     assert detail["satisfied"] is False
 
 
+def test_policy_validator_allows_admin_as_inherited_observer_role():
+    """Verify admin role can satisfy observer-assigned permissions via role inheritance."""
+    policy = {
+        "@context": "https://www.w3.org/ns/odrl.jsonld",
+        "@type": "Set",
+        "permission": [
+            {
+                "uid": "urn:policyaware:permission:test:observer-routing",
+                "action": ["summarise"],
+                "assignee": "urn:policyaware:role:business-observer",
+                "constraint": {"leftOperand": "purpose", "operator": "eq", "rightOperand": "routing"},
+            }
+        ],
+    }
+
+    validator = PolicyPurposeValidator(policy)
+    allowed, detail = validator.evaluate("pii-data-governance-admin", "routing", "summarise")
+
+    assert allowed is True
+    assert detail["satisfied"] is True
+    assert "principal role inherited assignee permissions" in detail["reasoning"]
+
+
+def test_policy_validator_denies_non_admin_for_observer_assignee_when_role_mismatch():
+    """Verify role inheritance does not allow unrelated non-admin role escalation."""
+    policy = {
+        "@context": "https://www.w3.org/ns/odrl.jsonld",
+        "@type": "Set",
+        "permission": [
+            {
+                "uid": "urn:policyaware:permission:test:observer-routing",
+                "action": ["summarise"],
+                "assignee": "urn:policyaware:role:business-observer",
+                "constraint": {"leftOperand": "purpose", "operator": "eq", "rightOperand": "routing"},
+            }
+        ],
+    }
+
+    validator = PolicyPurposeValidator(policy)
+    allowed, detail = validator.evaluate("customer-support-specialist", "routing", "summarise")
+
+    assert allowed is False
+    assert detail["satisfied"] is False
+    assert "principal role did not match assignee" in detail["reasoning"]
+
+
 def test_policy_validator_allows_legacy_role_aliases():
     """Verify legacy role aliases map to the canonical role."""
     policy = {

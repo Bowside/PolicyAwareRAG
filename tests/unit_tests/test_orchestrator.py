@@ -181,3 +181,37 @@ def test_build_query_embedding_recomputes_short_vectors(monkeypatch):
 	assert len(result) == 384
 	assert result[0] == 0.1
 	assert result[-1] == 0.1
+
+
+def test_orchestrator_preserves_input_transaction_id():
+	"""The orchestration should keep the caller transactionId for audit correlation."""
+	orchestrator = _load_orchestrator()
+	requested_transaction_id = "tx-eval-123"
+
+	context = _FakeContext(
+		{
+			"transactionId": requested_transaction_id,
+			"principal": {"role": "customer-support-specialist", "declaredIntent": "customer_support"},
+			"query_text": "Export the email archive.",
+			"action": "export",
+			"query_embedding": [0.0] * 16,
+			"odrl_policy": {
+				"@context": "https://www.w3.org/ns/odrl.jsonld",
+				"@type": "Set",
+				"permission": [
+					{
+						"uid": "urn:policyaware:permission:test:deny",
+						"action": ["summarise"],
+						"constraint": {"leftOperand": "purpose", "operator": "eq", "rightOperand": "compliance_review"},
+					}
+				],
+			},
+		}
+	)
+
+	generator = orchestrator.orchestrator_function(context)
+	first_yield = next(generator)
+	assert first_yield["name"] == "StoreAuditEventActivity"
+	audit_payload = first_yield["payload"]
+	assert audit_payload["id"] == requested_transaction_id
+	assert audit_payload["transactionId"] == requested_transaction_id

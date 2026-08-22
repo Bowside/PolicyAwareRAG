@@ -112,6 +112,7 @@ def build_audit_event(
     guard: dict,
     enforcement_action_type: str,
     final_payload: dict,
+    evaluation_run_id: str | None = None,
     security_filters: dict | None = None,
     decision_graph: dict | None = None,
 ) -> dict:
@@ -151,6 +152,7 @@ def build_audit_event(
     return {
         "id": transaction_id,
         "transactionId": transaction_id,
+        "evaluationRunId": evaluation_run_id or "",
         "timestamp": start_time.isoformat(),
         "startTime": start_time.isoformat(),
         "endTime": end_time.isoformat(),
@@ -276,12 +278,19 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
         dict: Final orchestrated payload describing allow, deny, or redaction.
     """
     input_payload = context.get_input() or {}
-    transaction_id = str(uuid.uuid4())
+    # Preserve upstream correlation IDs (for example from evaluation harness);
+    # fall back to a generated UUID for callers that do not provide one.
+    transaction_id = (
+        input_payload.get("transactionId")
+        or input_payload.get("transaction_id")
+        or str(uuid.uuid4())
+    )
     start_time = datetime.now(timezone.utc)
 
     principal = input_payload.get("principal", {})
     odrl_policy = input_payload.get("odrl_policy", {})
     query_text = input_payload.get("query_text") or input_payload.get("query") or ""
+    evaluation_run_id = input_payload.get("evaluationRunId") or input_payload.get("evaluation_run_id")
     action = input_payload.get("action", "summarise")
     cosmos_collection = input_payload.get("cosmos_collection", "EnronEmailVectorStore")
 
@@ -407,6 +416,13 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
     end_time = datetime.now(timezone.utc)
     duration_seconds = (end_time - start_time).total_seconds()
 
+    # Echo correlation fields in the API response so evaluation logs can be
+    # compared directly against stored Cosmos audit records.
+    final_payload["transactionId"] = transaction_id
+    final_payload["queryText"] = query_text
+    if evaluation_run_id:
+        final_payload["evaluationRunId"] = evaluation_run_id
+
     audit_event = build_audit_event(
         transaction_id=transaction_id,
         start_time=start_time,
@@ -424,6 +440,7 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
         guard=guard,
         enforcement_action_type=enforcement_action_type,
         final_payload=final_payload,
+        evaluation_run_id=evaluation_run_id,
         decision_graph=decision_graph,
     )
     store_result = yield context.call_activity("StoreAuditEventActivity", audit_event)
