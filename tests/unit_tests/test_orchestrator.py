@@ -215,3 +215,69 @@ def test_orchestrator_preserves_input_transaction_id():
 	audit_payload = first_yield["payload"]
 	assert audit_payload["id"] == requested_transaction_id
 	assert audit_payload["transactionId"] == requested_transaction_id
+
+
+def test_context_window_size_medium_sets_top_k_to_20(monkeypatch):
+	"""Context window size 'medium' should map retrieval top_k to 20."""
+	orchestrator = _load_orchestrator()
+	retriever_calls = {}
+
+	class _RecordingRetriever:
+		def __init__(self, *args, **kwargs):
+			retriever_calls["container_name"] = kwargs.get("container_name")
+
+		def retrieve(self, query_embedding, security_filters, top_k=10):
+			retriever_calls["query_embedding"] = query_embedding
+			retriever_calls["security_filters"] = security_filters
+			retriever_calls["top_k"] = top_k
+			return [{"id": "chunk-1", "content": "safe context"}]
+
+	monkeypatch.setattr(orchestrator, "ConflictAwareRetriever", _RecordingRetriever)
+
+	context = _FakeContext(
+		{
+			"principal": {"role": "privacy-compliance-analyst", "declaredIntent": "compliance_review"},
+			"query_text": "Summarise the privacy review emails",
+			"action": "summarise",
+			"context_window_size": "medium",
+			"query_embedding": [0.0] * 16,
+			"odrl_policy": {
+				"@context": "https://www.w3.org/ns/odrl.jsonld",
+				"@type": "Set",
+				"permission": [
+					{
+						"uid": "urn:policyaware:permission:test:allow",
+						"action": ["summarise"],
+						"assignee": "urn:policyaware:role:privacy-compliance-analyst",
+						"constraint": {"leftOperand": "purpose", "operator": "eq", "rightOperand": "compliance_review"},
+					}
+				],
+			},
+		}
+	)
+
+	generator = orchestrator.orchestrator_function(context)
+	first_yield = next(generator)
+	assert first_yield["name"] == "GenerateResponseActivity"
+	second_yield = generator.send("generated response")
+	assert second_yield["name"] == "StoreAuditEventActivity"
+	with pytest.raises(StopIteration) as excinfo:
+		generator.send({"status": "ok"})
+
+	result = excinfo.value.value
+
+	assert result["status"] == "ok"
+	assert retriever_calls["top_k"] == 20
+
+
+def test_resolve_context_window_size_defaults_and_invalid_values():
+	"""Unknown or missing context window size should fall back to small/10."""
+	orchestrator = _load_orchestrator()
+
+	default_label, default_top_k = orchestrator._resolve_context_window_size({})
+	invalid_label, invalid_top_k = orchestrator._resolve_context_window_size({"context_window_size": "xlarge"})
+
+	assert default_label == "small"
+	assert default_top_k == 10
+	assert invalid_label == "small"
+	assert invalid_top_k == 10

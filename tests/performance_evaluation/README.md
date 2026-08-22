@@ -28,6 +28,8 @@ Optional variables:
 - `EVAL_CASE_TYPE` (default case type filter if `--case-type` is omitted)
 - `EVAL_WARMUP_COUNT` (warmup request count, default 0)
 - `EVAL_RUN_ID` (explicit run-level correlation ID)
+- `EVAL_CONTEXT_WINDOW_SIZE` (`random`, `small`, `medium`, or `large`; default `random`)
+- `EVAL_CONTEXT_WINDOW_SEED` (optional deterministic seed when using `random`)
 
 ## Start the Function Host
 
@@ -55,6 +57,31 @@ Recommended for clear Cosmos correlation:
 c:/Users/dillo/Source/Repos/PolicyAwareRAG/.venv/Scripts/python.exe tests/performance_evaluation/run_evaluations.py --run-id fix-check-001 --warmup-count 0
 ```
 
+Use a larger retrieval context window:
+
+```powershell
+c:/Users/dillo/Source/Repos/PolicyAwareRAG/.venv/Scripts/python.exe tests/performance_evaluation/run_evaluations.py --context-window-size medium
+```
+
+Use randomized context windows per request (default behavior):
+
+```powershell
+c:/Users/dillo/Source/Repos/PolicyAwareRAG/.venv/Scripts/python.exe tests/performance_evaluation/run_evaluations.py --context-window-size random
+```
+
+Make random selection reproducible:
+
+```powershell
+c:/Users/dillo/Source/Repos/PolicyAwareRAG/.venv/Scripts/python.exe tests/performance_evaluation/run_evaluations.py --context-window-size random --context-window-seed 42
+```
+
+T-shirt size mapping:
+
+- `small` = top_k 10
+- `medium` = top_k 20
+- `large` = top_k 40
+- `random` = each request samples one of `small` / `medium` / `large`
+
 ## Run a Small Sample (Recommended for Fix Validation)
 
 Run 5 mixed prompts:
@@ -73,6 +100,12 @@ Run 5 prompts with an explicit correlation ID:
 
 ```powershell
 c:/Users/dillo/Source/Repos/PolicyAwareRAG/.venv/Scripts/python.exe tests/performance_evaluation/run_evaluations.py -n 5 --run-id smoke-2026-08-22 --warmup-count 0
+```
+
+Run a quick medium-window smoke test:
+
+```powershell
+c:/Users/dillo/Source/Repos/PolicyAwareRAG/.venv/Scripts/python.exe tests/performance_evaluation/run_evaluations.py -n 5 --context-window-size medium --warmup-count 0 --run-id medium-smoke-001
 ```
 
 ## Common Case Types
@@ -104,6 +137,7 @@ c:/Users/dillo/Source/Repos/PolicyAwareRAG/.venv/Scripts/python.exe tests/perfor
 - `timing_summary`
 - `case_type_breakdown`
 - `results` (per-request details including `transaction_id`, `evaluation_run_id`, `durable_instance_id`, and response echo fields)
+- Confirm context-window fields per request: `context_window_size`, `context_window_top_k`, and response match fields
 
 ## Correlating With Cosmos AuditStorage
 

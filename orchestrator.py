@@ -23,6 +23,31 @@ from policy_validator import PolicyPurposeValidator
 from retriever import ConflictAwareRetriever
 
 
+_CONTEXT_WINDOW_SIZES = {
+    "small": 10,
+    "medium": 20,
+    "large": 40,
+}
+
+
+def _resolve_context_window_size(input_payload: dict) -> tuple[str, int]:
+    """Resolve caller-specified context window size into a retrieval top_k value.
+
+    Args:
+        input_payload: Incoming orchestration payload.
+
+    Returns:
+        tuple[str, int]: Normalized size label and top_k value.
+    """
+    raw_size = input_payload.get("context_window_size") or input_payload.get("contextWindowSize") or "small"
+    size_label = str(raw_size).strip().lower()
+    if size_label not in _CONTEXT_WINDOW_SIZES:
+        logging.warning("Unknown context window size '%s'; defaulting to 'small'.", raw_size)
+        size_label = "small"
+
+    return size_label, _CONTEXT_WINDOW_SIZES[size_label]
+
+
 def _build_query_embedding(query_text: str, query_embedding: list) -> list:
     """Return a usable query embedding, generating one when the caller provides none.
 
@@ -106,6 +131,8 @@ def build_audit_event(
     query_embedding: list,
     action: str,
     cosmos_collection: str,
+    context_window_size: str,
+    context_window_top_k: int,
     retrieved: list,
     eval_detail: dict,
     allowed: bool,
@@ -168,6 +195,8 @@ def build_audit_event(
             "action": action,
             "securityFilters": security_filters or {},
             "cosmosCollectionId": cosmos_collection,
+            "contextWindowSize": context_window_size,
+            "contextWindowTopK": context_window_top_k,
         },
         "odrlPolicy": odrl_policy,
         "policyEvaluation": {
@@ -293,6 +322,7 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
     evaluation_run_id = input_payload.get("evaluationRunId") or input_payload.get("evaluation_run_id")
     action = input_payload.get("action", "summarise")
     cosmos_collection = input_payload.get("cosmos_collection", "EnronEmailVectorStore")
+    context_window_size, context_window_top_k = _resolve_context_window_size(input_payload)
 
     pv = PolicyPurposeValidator(odrl_policy)
     allowed, eval_detail = pv.evaluate(principal.get("role",""), principal.get("declaredIntent",""), action)
@@ -337,7 +367,7 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
             # Retrieval is intentionally broad; policy enforcement happens before the RAG context is assembled.
             query_embedding = _build_query_embedding(query_text, input_payload.get("query_embedding", []))
             retriever = ConflictAwareRetriever(container_name=cosmos_collection)
-            retrieved = retriever.retrieve(query_embedding, {}, top_k=10)
+            retrieved = retriever.retrieve(query_embedding, {}, top_k=context_window_top_k)
             decision_graph = _evaluate_multi_agent_graph(retrieved, eval_detail)
 
         if handled_count_query:
@@ -420,6 +450,8 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
     # compared directly against stored Cosmos audit records.
     final_payload["transactionId"] = transaction_id
     final_payload["queryText"] = query_text
+    final_payload["contextWindowSize"] = context_window_size
+    final_payload["contextWindowTopK"] = context_window_top_k
     if evaluation_run_id:
         final_payload["evaluationRunId"] = evaluation_run_id
 
@@ -434,6 +466,8 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
         query_embedding=query_embedding,
         action=action,
         cosmos_collection=cosmos_collection,
+        context_window_size=context_window_size,
+        context_window_top_k=context_window_top_k,
         retrieved=retrieved,
         eval_detail=eval_detail,
         allowed=allowed,

@@ -11,6 +11,7 @@ import aiohttp
 import argparse
 import json
 import os
+import random
 import time
 import uuid
 from pathlib import Path
@@ -20,12 +21,9 @@ from datetime import datetime, timezone
 runtimestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
 
 # For local testing
-# FUNCTION_APP_URL = os.environ.get("FUNCTION_APP_URL", "http://localhost:7071/api/orchestrators/start")
-# FUNCTION_APP_KEY = os.environ.get("FUNCTION_APP_KEY", "")
+FUNCTION_APP_URL = os.environ.get("FUNCTION_APP_URL", "http://localhost:7071/api/orchestrators/start")
+FUNCTION_APP_KEY = os.environ.get("FUNCTION_APP_KEY", "")
 
-# For function app testing
-FUNCTION_APP_URL = os.environ.get("FUNCTION_APP_URL")
-FUNCTION_APP_KEY = os.environ.get("FUNCTION_APP_KEY")
 RESULTS_FILE = os.path.join(os.path.dirname(__file__), f"evaluation_results{runtimestamp}.json")
 POLICY_DIR = Path(__file__).resolve().parents[2] / "odrl_policies"
 
@@ -36,6 +34,27 @@ headers = {
                 "x-functions-key": FUNCTION_APP_KEY,
                 "Content-Type": "application/json"
                }
+
+
+CONTEXT_WINDOW_SIZES = {
+    "small": 10,
+    "medium": 20,
+    "large": 40,
+}
+
+
+def _select_context_window_size(configured_size: str) -> str:
+    """Resolve context window size for a single request.
+
+    Args:
+        configured_size: Either a fixed t-shirt size or "random".
+
+    Returns:
+        str: Effective context window size for this request.
+    """
+    if configured_size == "random":
+        return random.choice(sorted(CONTEXT_WINDOW_SIZES.keys()))
+    return configured_size
 
 
 def load_policy(policy_filename):
@@ -431,10 +450,27 @@ def _parse_args():
         default=os.environ.get("EVAL_RUN_ID", runtimestamp),
         help="Correlation ID stamped into each request for Cosmos/result matching.",
     )
+    parser.add_argument(
+        "--context-window-size",
+        type=str,
+        default=os.environ.get("EVAL_CONTEXT_WINDOW_SIZE", "random"),
+        choices=["random", *sorted(CONTEXT_WINDOW_SIZES.keys())],
+        help="Context window size: random per request, or fixed small=10, medium=20, large=40.",
+    )
+    parser.add_argument(
+        "--context-window-seed",
+        type=int,
+        default=(
+            int(os.environ["EVAL_CONTEXT_WINDOW_SEED"])
+            if os.environ.get("EVAL_CONTEXT_WINDOW_SEED")
+            else None
+        ),
+        help="Optional RNG seed for deterministic random context-window selection.",
+    )
     return parser.parse_args()
 
 
-def _validate_runtime_config() -> None:
+def _validate_runtime_config(context_window_size: str) -> None:
     """Validate required runtime configuration before requests are sent."""
     if not isinstance(FUNCTION_APP_URL, str) or not FUNCTION_APP_URL.strip():
         raise ValueError(
@@ -442,6 +478,10 @@ def _validate_runtime_config() -> None:
         )
     if not FUNCTION_APP_URL.startswith(("http://", "https://")):
         raise ValueError("FUNCTION_APP_URL must start with http:// or https://")
+    if context_window_size not in {"random", *CONTEXT_WINDOW_SIZES.keys()}:
+        raise ValueError(
+            f"context-window-size must be one of: random, {', '.join(sorted(CONTEXT_WINDOW_SIZES.keys()))}"
+        )
 
 
 async def _start_and_wait(session, payload, timeout=120):
@@ -642,7 +682,13 @@ def _validate_outcome(record: dict) -> dict:
     return record
 
 
-async def _post_prompt(session, prompt_obj, baseline_latency, evaluation_run_id: str):
+async def _post_prompt(
+    session,
+    prompt_obj,
+    baseline_latency,
+    evaluation_run_id: str,
+    context_window_size: str,
+):
     """Post a prompt to the orchestration and return results with detailed timing.
     
     Executes a complete test scenario: loads policy, generates embeddings, sends request,
@@ -696,10 +742,13 @@ async def _post_prompt(session, prompt_obj, baseline_latency, evaluation_run_id:
     principal_role = principal.get("role", "unknown")
     seed_id = prompt_obj.get("seed", "default")
     query_embedding = _generate_embedding(query_text, principal_role, seed_id)
+    effective_context_window_size = _select_context_window_size(context_window_size)
+    context_window_top_k = CONTEXT_WINDOW_SIZES[effective_context_window_size]
 
     payload = {
         "transactionId": transaction_id,
         "evaluationRunId": evaluation_run_id,
+        "context_window_size": effective_context_window_size,
         "principal": principal,
         "odrl_policy": odrl_policy,
         "query_text": query_text,
@@ -777,6 +826,8 @@ async def _post_prompt(session, prompt_obj, baseline_latency, evaluation_run_id:
     record = {
         "transaction_id": transaction_id,
         "evaluation_run_id": evaluation_run_id,
+        "context_window_size": effective_context_window_size,
+        "context_window_top_k": context_window_top_k,
         "request_query_text": query_text,
         "durable_instance_id": result.get("instance_id"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -807,9 +858,13 @@ async def _post_prompt(session, prompt_obj, baseline_latency, evaluation_run_id:
         response_transaction_id = body.get("transactionId")
         response_query_text = body.get("queryText")
         response_run_id = body.get("evaluationRunId")
+        response_context_window_size = body.get("contextWindowSize")
+        response_context_window_top_k = body.get("contextWindowTopK")
         record["response_transaction_id"] = response_transaction_id
         record["response_query_text"] = response_query_text
         record["response_evaluation_run_id"] = response_run_id
+        record["response_context_window_size"] = response_context_window_size
+        record["response_context_window_top_k"] = response_context_window_top_k
         record["transaction_id_match"] = (
             response_transaction_id == transaction_id if response_transaction_id else None
         )
@@ -819,6 +874,14 @@ async def _post_prompt(session, prompt_obj, baseline_latency, evaluation_run_id:
         record["evaluation_run_id_match"] = (
             response_run_id == evaluation_run_id if response_run_id else None
         )
+        record["context_window_size_match"] = (
+            response_context_window_size == effective_context_window_size if response_context_window_size else None
+        )
+        record["context_window_top_k_match"] = (
+            int(response_context_window_top_k) == context_window_top_k
+            if response_context_window_top_k is not None
+            else None
+        )
 
     # Validate test outcome
     record = _validate_outcome(record)
@@ -826,7 +889,12 @@ async def _post_prompt(session, prompt_obj, baseline_latency, evaluation_run_id:
     return record
 
 
-async def run_all(prompts, evaluation_run_id: str, warmup_count: int = 0):
+async def run_all(
+    prompts,
+    evaluation_run_id: str,
+    warmup_count: int = 0,
+    context_window_size: str = "small",
+):
     """Run all prompts concurrently with warmup baseline latency calculation.
     
     Executes warmup requests to establish baseline latency, then runs all test prompts
@@ -846,7 +914,13 @@ async def run_all(prompts, evaluation_run_id: str, warmup_count: int = 0):
         # Execute warmup requests without baseline adjustment
         baseline_latencies = []
         for bp in baseline_prompts:
-            rec = await _post_prompt(session, bp, baseline_latency=None, evaluation_run_id=evaluation_run_id)
+            rec = await _post_prompt(
+                session,
+                bp,
+                baseline_latency=None,
+                evaluation_run_id=evaluation_run_id,
+                context_window_size=context_window_size,
+            )
             baseline_latencies.append(rec["latency_seconds"])
         baseline_mean = sum(baseline_latencies) / len(baseline_latencies) if baseline_latencies else None
 
@@ -856,7 +930,13 @@ async def run_all(prompts, evaluation_run_id: str, warmup_count: int = 0):
 
         async def worker(p):
             async with semaphore:
-                return await _post_prompt(session, p, baseline_mean, evaluation_run_id=evaluation_run_id)
+                return await _post_prompt(
+                    session,
+                    p,
+                    baseline_mean,
+                    evaluation_run_id=evaluation_run_id,
+                    context_window_size=context_window_size,
+                )
 
         tasks = [asyncio.create_task(worker(p)) for p in prompts]
         results = []
@@ -976,7 +1056,9 @@ def main():
     statistics to evaluation_results.json.
     """
     args = _parse_args()
-    _validate_runtime_config()
+    _validate_runtime_config(args.context_window_size)
+    if args.context_window_seed is not None:
+        random.seed(args.context_window_seed)
     if args.sample_size <= 0:
         raise ValueError("sample-size must be greater than 0")
     if args.warmup_count < 0:
@@ -988,6 +1070,15 @@ def main():
     print(f"Sending {len(prompts)} evaluation requests to {FUNCTION_APP_URL}")
     print(f"Evaluation run ID: {args.run_id}")
     print(f"Warmup requests: {args.warmup_count}")
+    if args.context_window_size == "random":
+        print("Context window: random per request (small=10, medium=20, large=40)")
+    else:
+        print(
+            f"Context window: {args.context_window_size} "
+            f"(top_k={CONTEXT_WINDOW_SIZES[args.context_window_size]})"
+        )
+    if args.context_window_seed is not None:
+        print(f"Context window RNG seed: {args.context_window_seed}")
     if args.case_type:
         print(f"Case type filter: {args.case_type}")
     print(f"\nTest Distribution:")
@@ -1000,7 +1091,14 @@ def main():
     print()
     
     # Execute test suite and save detailed results
-    results = asyncio.run(run_all(prompts, evaluation_run_id=args.run_id, warmup_count=args.warmup_count))
+    results = asyncio.run(
+        run_all(
+            prompts,
+            evaluation_run_id=args.run_id,
+            warmup_count=args.warmup_count,
+            context_window_size=args.context_window_size,
+        )
+    )
     save_results(results)
     print(f"\nSaved results to {RESULTS_FILE}")
 

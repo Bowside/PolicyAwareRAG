@@ -71,3 +71,12 @@ def test_validate_outcome_accepts_adversarial_no_context_as_safe_pass():
     assert result["test_passed"] is True
     assert result["actual_outcome"] == "allow_no_context"
     assert result["no_context_response"] is True
+
+
+def test_select_context_window_size_fixed_value_returns_same():
+    assert run_evaluations._select_context_window_size("medium") == "medium"
+
+
+def test_select_context_window_size_random_uses_available_sizes(monkeypatch):
+    monkeypatch.setattr(run_evaluations.random, "choice", lambda choices: "large")
+    assert run_evaluations._select_context_window_size("random") == "large"
