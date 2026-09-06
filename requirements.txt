@@ -7,6 +7,6 @@ langgraph==1.2.11
 faiss-cpu==1.15.0
 azure-cosmos==4.9.0
 sentence-transformers==4.1.0
-python-dotenv==1.0.1
+python-dotenv==1.2.2
 openai==3.6.0
 pytest==8.3.3
