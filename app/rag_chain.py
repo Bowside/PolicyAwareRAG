@@ -200,7 +200,7 @@ def retrieve_documents(
                     "purpose": purpose or "metadata_review",
                     "action": action or "retrieve",
                 },
-                telemetry={"queryLength": len(question), "latencyMs": int((perf_counter() - start_time) * 1000)},
+                telemetry={"queryLength": len(question), "latencyMs": round((perf_counter() - start_time) * 1000, 3)},
                 correlation_id=correlation_id,
                 user_id=user_id,
                 prompt_text=question,
@@ -245,7 +245,7 @@ def retrieve_documents(
             },
             telemetry={
                 "queryLength": len(question),
-                "latencyMs": int((perf_counter() - start_time) * 1000),
+                "latencyMs": round((perf_counter() - start_time) * 1000, 3),
                 "documentMatchCount": len(documents),
             },
             correlation_id=correlation_id,
@@ -274,7 +274,7 @@ def retrieve_context(question: str, user_roles: Sequence[str] | None = None, pur
     return [doc.page_content for doc in docs]
 
 
-def build_rag_graph():
+def build_rag_graph(audit_logger: AuditLogger | None = None):
     """Build the LangGraph pipeline used to retrieve and answer the query."""
     settings = get_foundry_settings()
 
@@ -305,7 +305,7 @@ Return a concise but complete answer and cite the relevant email metadata you us
         action = state.get("action") or "retrieve"
         correlation_id = state.get("correlation_id")
         user_id = state.get("user_id")
-        audit_logger = AuditLogger()
+        request_audit_logger = audit_logger or AuditLogger()
         evaluate_intent_against_odrl(state["question"], user_roles, purpose=purpose, action=action)
         docs = retrieve_documents(
             state["question"],
@@ -314,7 +314,7 @@ Return a concise but complete answer and cite the relevant email metadata you us
             action=action,
             correlation_id=correlation_id,
             user_id=user_id,
-            audit_logger=audit_logger,
+            audit_logger=request_audit_logger,
         )
         state["context"] = [doc.page_content for doc in docs]
         state["sources"] = [
@@ -325,12 +325,13 @@ Return a concise but complete answer and cite the relevant email metadata you us
 
     def answer(state: RAGState) -> RAGState:
         """Generate the final answer and apply the spokesperson guardrail."""
+        start_time = perf_counter()
         chain = prompt | llm | StrOutputParser()
         answer = chain.invoke({
             "question": state["question"],
             "context": "\n\n".join(state["context"]),
         })
-        audit_logger = AuditLogger()
+        request_audit_logger = audit_logger or AuditLogger()
         protected_answer = spokesperson_guardrail(
             state.get("context", []),
             answer,
@@ -338,7 +339,7 @@ Return a concise but complete answer and cite the relevant email metadata you us
             purpose=state.get("purpose"),
         )
         was_redacted = protected_answer != answer
-        audit_logger.emit(
+        request_audit_logger.emit(
             step_name="SpokespersonValidation",
             execution_status="REDACTED" if was_redacted else "ALLOWED",
             policy_metadata={
@@ -349,6 +350,7 @@ Return a concise but complete answer and cite the relevant email metadata you us
             telemetry={
                 "answerLength": len(answer),
                 "redacted": was_redacted,
+                "latencyMs": round((perf_counter() - start_time) * 1000, 3),
             },
             correlation_id=state.get("correlation_id"),
             user_id=state.get("user_id"),
@@ -362,17 +364,17 @@ Return a concise but complete answer and cite the relevant email metadata you us
 
     graph = StateGraph(RAGState)
     graph.add_node("retrieve", retrieve)
-    graph.add_node("answer", answer)
-    graph.add_edge("retrieve", "answer")
-    graph.add_edge("answer", END)
+    graph.add_node("generate_answer", answer)
+    graph.add_edge("retrieve", "generate_answer")
+    graph.add_edge("generate_answer", END)
     graph.set_entry_point("retrieve")
     return graph.compile()
 
 
-def build_rag_chain():
+def build_rag_chain(audit_logger: AuditLogger | None = None):
     """Create and return the compiled RAG graph for execution.
 
     Returns:
         The compiled LangGraph pipeline instance.
     """
-    return build_rag_graph()
+    return build_rag_graph(audit_logger=audit_logger)

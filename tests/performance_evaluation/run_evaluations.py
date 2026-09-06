@@ -130,7 +130,7 @@ def extract_step_metrics(audit_record: Dict[str, Any], user_query: str) -> List[
         step_record = {
             "stepName": step_name,
             "executionStatus": step.get("executionStatus", "UNKNOWN"),
-            "latency_ms": int(telemetry.get("latencyMs") or telemetry.get("elapsedMs") or telemetry.get("responseTimeMs") or 0),
+            "latency_ms": float(telemetry.get("latencyMs") or telemetry.get("elapsedMs") or telemetry.get("responseTimeMs") or 0),
             "query_tokens": estimate_tokens(step.get("userQuery") or user_query),
             "answer_tokens": int(telemetry.get("answerLength") or telemetry.get("responseLength") or 0),
             "document_count": telemetry.get("documentMatchCount"),
