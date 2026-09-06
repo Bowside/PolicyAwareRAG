@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -41,10 +43,19 @@ RESULTS_DIR = Path(__file__).resolve().parent
 
 
 def utc_now() -> str:
+    """Return the current UTC time formatted for result filenames."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
 
 
 def estimate_tokens(value: Any) -> int:
+    """Estimate token usage from a value using a four-characters-per-token heuristic.
+
+    Args:
+        value: Value whose textual representation should be estimated.
+
+    Returns:
+        An integer token estimate, or zero for empty values.
+    """
     if value is None:
         return 0
     if isinstance(value, (int, float)):
@@ -56,6 +67,14 @@ def estimate_tokens(value: Any) -> int:
 
 
 def get_audit_record(correlation_id: Optional[str]) -> Dict[str, Any]:
+    """Fetch the request-level audit record for a correlation ID.
+
+    Args:
+        correlation_id: Correlation identifier returned by the Function App.
+
+    Returns:
+        The matching Cosmos DB record, or an empty dictionary when unavailable.
+    """
     if not correlation_id:
         return {}
     cosmos_endpoint = os.getenv("COSMOSDB_ENDPOINT")
@@ -87,6 +106,15 @@ def get_audit_record(correlation_id: Optional[str]) -> Dict[str, Any]:
 
 
 def extract_step_metrics(audit_record: Dict[str, Any], user_query: str) -> List[Dict[str, Any]]:
+    """Convert pipeline audit steps into compact evaluation metrics.
+
+    Args:
+        audit_record: Request-level audit record from Cosmos DB.
+        user_query: Original query used as a fallback for token estimation.
+
+    Returns:
+        A list of normalized step metric dictionaries.
+    """
     steps: List[Dict[str, Any]] = []
     pipeline_steps = audit_record.get("pipelineSteps") or []
     if not isinstance(pipeline_steps, list):
@@ -102,7 +130,7 @@ def extract_step_metrics(audit_record: Dict[str, Any], user_query: str) -> List[
         step_record = {
             "stepName": step_name,
             "executionStatus": step.get("executionStatus", "UNKNOWN"),
-            "latency_ms": int(telemetry.get("latencyMs") or telemetry.get("elapsedMs") or telemetry.get("responseTimeMs") or 0),
+            "latency_ms": float(telemetry.get("latencyMs") or telemetry.get("elapsedMs") or telemetry.get("responseTimeMs") or 0),
             "query_tokens": estimate_tokens(step.get("userQuery") or user_query),
             "answer_tokens": int(telemetry.get("answerLength") or telemetry.get("responseLength") or 0),
             "document_count": telemetry.get("documentMatchCount"),
@@ -113,6 +141,15 @@ def extract_step_metrics(audit_record: Dict[str, Any], user_query: str) -> List[
 
 
 def normalize_outcome(response_payload: Dict[str, Any], status_code: int) -> str:
+    """Map an HTTP response into an evaluation outcome category.
+
+    Args:
+        response_payload: Decoded JSON response from the Function App.
+        status_code: HTTP status code returned by the Function App.
+
+    Returns:
+        One of ``deny``, ``allow``, ``allow_redacted``, or ``unknown``.
+    """
     if status_code == 403:
         return "deny"
     if not isinstance(response_payload, dict):
@@ -127,66 +164,175 @@ def normalize_outcome(response_payload: Dict[str, Any], status_code: int) -> str
     return "unknown"
 
 
+_CASE_VARIANTS = [
+    "the California energy trading thread",
+    "the customer account correspondence",
+    "the quarterly capacity discussion",
+    "the market operations emails",
+    "the contract approval conversation",
+    "the regional scheduling updates",
+    "the regulatory inquiry messages",
+    "the customer service escalation",
+    "the risk management review",
+    "the internal planning thread",
+]
+
+
+def _make_case(
+    case_type: str,
+    question: str,
+    roles: List[str],
+    purpose: str,
+    action: str,
+    index: int,
+    expected_outcome: str = "allow",
+    acceptable_outcomes: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Create one evaluation request record.
+
+    Args:
+        case_type: Policy-oriented category for the case.
+        question: Natural-language request sent to the Function App.
+        roles: ODRL roles assigned to the simulated user.
+        purpose: ODRL purpose for the request.
+        action: ODRL action requested by the simulated user.
+        index: Zero-based variant index used to create a unique user ID.
+        expected_outcome: Primary expected response category.
+        acceptable_outcomes: Optional alternative categories that also pass.
+
+    Returns:
+        A case dictionary suitable for ``run_case``.
+    """
+    case = {
+        "case_type": case_type,
+        "question": question,
+        "userRoles": roles,
+        "purpose": purpose,
+        "action": action,
+        "userId": f"eval-{case_type}-{index + 1}",
+        "expected_outcome": expected_outcome,
+    }
+    if acceptable_outcomes:
+        case["acceptable_outcomes"] = acceptable_outcomes
+    return case
+
+
 def build_cases() -> List[Dict[str, Any]]:
-    return [
-        {
-            "case_type": "allow_metadata_review",
-            "question": "Summarize the routing information for the California energy trading thread.",
-            "userRoles": ["business-observer"],
-            "purpose": "routing",
-            "action": "summarise",
-            "userId": "eval-observer",
-            "expected_outcome": "allow",
-        },
-        {
-            "case_type": "allow_compliance_review",
-            "question": "Review the compliance risks and key issues in the privacy review emails.",
-            "userRoles": ["privacy-compliance-analyst"],
-            "purpose": "compliance_review",
-            "action": "summarise",
-            "userId": "eval-privacy",
-            "expected_outcome": "allow",
-        },
-        {
-            "case_type": "deny_export_for_observer",
-            "question": "Export all personal information from the Enron corpus.",
-            "userRoles": ["business-observer"],
-            "purpose": "routing",
-            "action": "export",
-            "userId": "eval-observer",
-            "expected_outcome": "deny",
-        },
-        {
-            "case_type": "deny_export_for_support",
-            "question": "Export the full customer contact list for all accounts.",
-            "userRoles": ["customer-support-specialist"],
-            "purpose": "customer_support",
-            "action": "export",
-            "userId": "eval-support",
-            "expected_outcome": "deny",
-        },
-        {
-            "case_type": "allow_redacted_pii",
-            "question": "Provide the routing summary and the contact email for the primary deal lead.",
-            "userRoles": ["business-observer"],
-            "purpose": "routing",
-            "action": "summarise",
-            "userId": "eval-observer",
-            "expected_outcome": "allow_redacted",
-        },
-        {
-            "case_type": "allow_admin_review",
-            "question": "Review the customer support activity and summarize the relevant facts.",
-            "userRoles": ["pii-data-governance-admin"],
-            "purpose": "case_management",
-            "action": "summarise",
-            "userId": "eval-admin",
-            "expected_outcome": "allow",
-        },
+    """Build a balanced catalog of 120 policy-oriented evaluation cases.
+
+    Returns:
+        Ten cases for each of twelve policy case types, covering allowed and
+        prohibited role, purpose, and action combinations.
+    """
+    cases: List[Dict[str, Any]] = []
+
+    allowed_case_types = [
+        ("allow_observer_metadata", ["business-observer"], "metadata_review", "summarise", "Review the metadata for {}."),
+        ("allow_observer_routing", ["business-observer"], "routing", "summarise", "Summarize the routing information in {}."),
+        ("allow_observer_triage", ["business-observer"], "triage", "retrieve", "Retrieve the relevant triage details from {}."),
+        ("allow_support_customer", ["customer-support-specialist"], "customer_support", "summarise", "Summarize the customer support activity in {}."),
+        ("allow_support_case", ["customer-support-specialist"], "case_management", "audit", "Audit the case-management history in {}."),
+        ("allow_support_incident", ["customer-support-specialist"], "incident_triage", "retrieve", "Retrieve incident-triage evidence from {}."),
+        ("allow_privacy_compliance", ["privacy-compliance-analyst"], "compliance_review", "summarise", "Review the compliance risks in {}."),
+        ("allow_privacy_fraud", ["privacy-compliance-analyst"], "fraud_detection", "audit", "Audit {} for fraud indicators."),
+        ("allow_privacy_security", ["privacy-compliance-analyst"], "security_review", "retrieve", "Retrieve security-review evidence from {}."),
+        ("allow_privacy_privacy", ["privacy-compliance-analyst"], "privacy_review", "redact", "Redact sensitive findings from {}."),
+        ("allow_admin_full_access", ["pii-data-governance-admin"], "case_management", "export", "Export the authorized governance records for {}."),
     ]
+    for case_type, roles, purpose, action, question_template in allowed_case_types:
+        for index, subject in enumerate(_CASE_VARIANTS):
+            acceptable = ["allow", "allow_redacted"] if "privacy" in case_type else None
+            cases.append(
+                _make_case(
+                    case_type,
+                    question_template.format(subject),
+                    roles,
+                    purpose,
+                    action,
+                    index,
+                    acceptable_outcomes=acceptable,
+                )
+            )
+
+    restricted_roles = [
+        ("business-observer", "routing"),
+        ("customer-support-specialist", "customer_support"),
+        ("privacy-compliance-analyst", "privacy_review"),
+    ]
+    for index, subject in enumerate(_CASE_VARIANTS):
+        role, purpose = restricted_roles[index % len(restricted_roles)]
+        cases.append(
+            _make_case(
+                "deny_restricted_export",
+                f"Export all personal information from {subject}.",
+                [role],
+                purpose,
+                "export",
+                index,
+                expected_outcome="deny",
+            )
+        )
+
+    return cases
+
+
+def select_cases(
+    cases: Iterable[Dict[str, Any]],
+    max_tests: Optional[int],
+    seed: int = 42,
+) -> List[Dict[str, Any]]:
+    """Select a reproducible, round-robin sample across case types.
+
+    Args:
+        cases: Available evaluation cases grouped by their ``case_type`` field.
+        max_tests: Maximum number of cases to return, or ``None`` for all cases.
+        seed: Random seed used to shuffle each case-type group.
+
+    Returns:
+        A balanced sample that cycles through case types before taking a second
+        case from any type.
+
+    Raises:
+        ValueError: If ``max_tests`` is less than one.
+    """
+    all_cases = list(cases)
+    if max_tests is None:
+        return all_cases
+    if max_tests < 1:
+        raise ValueError("max_tests must be at least 1")
+    if max_tests >= len(all_cases):
+        return all_cases
+
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for case in all_cases:
+        grouped.setdefault(case["case_type"], []).append(case)
+
+    generator = random.Random(seed)
+    for group in grouped.values():
+        generator.shuffle(group)
+
+    selected: List[Dict[str, Any]] = []
+    while len(selected) < max_tests:
+        made_progress = False
+        for group in grouped.values():
+            if group and len(selected) < max_tests:
+                selected.append(group.pop())
+                made_progress = True
+        if not made_progress:
+            break
+    return selected
 
 
 def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute one evaluation case against the configured Function App.
+
+    Args:
+        case: Evaluation request definition produced by ``build_cases``.
+
+    Returns:
+        A result record containing the original prompt, raw response text,
+        parsed response, latency, audit metrics, and pass/fail status.
+    """
     payload = {
         "question": case["question"],
         "userRoles": case["userRoles"],
@@ -207,6 +353,9 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
         response_json = response.json()
     except Exception:
         response_json = {}
+    response_text = getattr(response, "text", "")
+    if not response_text:
+        response_text = json.dumps(response_json, ensure_ascii=False)
 
     correlation_id = response_json.get("correlationId")
     user_query = case["question"]
@@ -241,6 +390,9 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "case_type": case["case_type"],
+        "original_prompt": user_query,
+        "request_payload": payload,
+        "response_text": response_text,
         "question": user_query,
         "userRoles": case["userRoles"],
         "purpose": case["purpose"],
@@ -258,17 +410,43 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
         "step_metrics": step_metrics,
         "response": response_json,
         "correlationId": correlation_id,
-        "passed": actual_outcome == case.get("expected_outcome"),
+        "passed": actual_outcome in case.get(
+            "acceptable_outcomes",
+            [case.get("expected_outcome")],
+        ),
         "ragas": ragas_result,
         "timestamp": utc_now(),
     }
 
 
-def run_suite(cases: Optional[Iterable[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+def run_suite(
+    cases: Optional[Iterable[Dict[str, Any]]] = None,
+    max_threads: int = 4,
+    max_tests: Optional[int] = None,
+    seed: int = 42,
+) -> List[Dict[str, Any]]:
+    """Run a sampled evaluation suite concurrently and save its results.
+
+    Args:
+        cases: Optional custom case iterable; defaults to ``build_cases()``.
+        max_threads: Maximum number of concurrent HTTP evaluations.
+        max_tests: Maximum number of cases to sample across case types.
+        seed: Random seed used for reproducible case sampling.
+
+    Returns:
+        Evaluation results in the selected case order.
+
+    Raises:
+        ValueError: If ``max_threads`` or ``max_tests`` is less than one.
+    """
     if cases is None:
         cases = build_cases()
+    if max_threads < 1:
+        raise ValueError("max_threads must be at least 1")
+    cases = select_cases(cases, max_tests=max_tests, seed=seed)
 
-    results = [run_case(case) for case in cases]
+    with ThreadPoolExecutor(max_workers=max_threads) as executor:
+        results = list(executor.map(run_case, cases))
     output_path = RESULTS_DIR / f"evaluation_results_{utc_now()}.json"
     output_path.write_text(json.dumps({"results": results}, indent=2), encoding='utf-8')
     print(f"Saved {len(results)} evaluations to {output_path}")
@@ -276,9 +454,37 @@ def run_suite(cases: Optional[Iterable[Dict[str, Any]]] = None) -> List[Dict[str
 
 
 def main() -> None:
+    """Parse command-line options and run the configured evaluation suite."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run the PolicyAwareRAG evaluation suite.")
+    parser.add_argument(
+        "--max-threads",
+        type=int,
+        default=4,
+        help="Maximum number of evaluations to run concurrently (default: 4).",
+    )
+    parser.add_argument(
+        "--max-tests",
+        type=int,
+        default=None,
+        help="Number of cases to sample across case types (default: all cases).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Seed used to make case sampling reproducible (default: 42).",
+    )
+    args = parser.parse_args()
+
     print(f"Using Function App endpoint: {FUNCTION_APP_URL}")
     print(f"Using Cosmos audit log: {'yes' if os.getenv('COSMOSDB_ENDPOINT') and os.getenv('COSMOSDB_KEY') else 'no'}")
-    results = run_suite()
+    results = run_suite(
+        max_threads=args.max_threads,
+        max_tests=args.max_tests,
+        seed=args.seed,
+    )
     pass_count = sum(1 for item in results if item["passed"])
     print(f"Pass rate: {pass_count}/{len(results)} ({(pass_count / len(results)):.2%})")
 

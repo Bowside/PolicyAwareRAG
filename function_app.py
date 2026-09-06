@@ -2,6 +2,7 @@
 
 import json
 import logging
+from time import perf_counter
 import uuid
 
 import azure.functions as func
@@ -49,6 +50,7 @@ def rag_http(req: func.HttpRequest) -> func.HttpResponse:
     user_id = (payload or {}).get("userId") or (payload or {}).get("user_id") or "anonymous"
     correlation_id = (payload or {}).get("correlationId") or str(uuid.uuid4())
     audit_logger = AuditLogger()
+    intent_start = perf_counter()
 
     if isinstance(user_roles, str):
         user_roles = [user_roles]
@@ -69,7 +71,10 @@ def rag_http(req: func.HttpRequest) -> func.HttpResponse:
                 "purpose": purpose or "metadata_review",
                 "action": action,
             },
-            telemetry={"queryLength": len(question)},
+            telemetry={
+                "queryLength": len(question),
+                "latencyMs": round((perf_counter() - intent_start) * 1000, 3),
+            },
             correlation_id=correlation_id,
             user_id=user_id,
             prompt_text=question,
@@ -77,7 +82,7 @@ def rag_http(req: func.HttpRequest) -> func.HttpResponse:
             finalize=False,
         )
 
-        chain = build_rag_chain()
+        chain = build_rag_chain(audit_logger=audit_logger)
         result = chain.invoke({
             "question": question,
             "user_roles": user_roles,
@@ -88,6 +93,7 @@ def rag_http(req: func.HttpRequest) -> func.HttpResponse:
         })
 
         final_answer = result.get("answer", "")
+        output_start = perf_counter()
         final_status = "REDACTED" if final_answer != result.get("answer", "") else "ALLOWED"
         audit_logger.emit(
             step_name="OutputRedaction",
@@ -100,6 +106,7 @@ def rag_http(req: func.HttpRequest) -> func.HttpResponse:
             telemetry={
                 "documentMatchCount": len(result.get("sources", [])),
                 "responseLength": len(final_answer),
+                "latencyMs": round((perf_counter() - output_start) * 1000, 3),
             },
             correlation_id=correlation_id,
             user_id=user_id,
@@ -131,7 +138,10 @@ def rag_http(req: func.HttpRequest) -> func.HttpResponse:
                 "purpose": purpose or "metadata_review",
                 "action": action,
             },
-            telemetry={"queryLength": len(question)},
+            telemetry={
+                "queryLength": len(question),
+                "latencyMs": round((perf_counter() - intent_start) * 1000, 3),
+            },
             correlation_id=correlation_id,
             user_id=user_id,
             prompt_text=question,
@@ -154,7 +164,10 @@ def rag_http(req: func.HttpRequest) -> func.HttpResponse:
                 "purpose": purpose or "metadata_review",
                 "action": action,
             },
-            telemetry={"queryLength": len(question)},
+            telemetry={
+                "queryLength": len(question),
+                "latencyMs": round((perf_counter() - intent_start) * 1000, 3),
+            },
             correlation_id=correlation_id,
             user_id=user_id,
             prompt_text=question,
