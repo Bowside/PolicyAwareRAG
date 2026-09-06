@@ -1,136 +1,62 @@
-# Policy-Aware RAG Gateway
+# PolicyAwareRAG
 
-This workspace contains baseline Terraform and Python code for a policy-aware Retrieval-Augmented Generation gateway.
+A Python Azure Functions app for Enron email retrieval using LangChain, LangGraph, Cosmos DB vector search, and Microsoft Foundry models.
 
-- Terraform: `terraform/` contains `main.tf`, `variables.tf`, and `outputs.tf` for provisioning Azure resources (Function App, Key Vault, Cosmos DB, Blob Storage, Cognitive Account).
-- Python: Orchestrator and modules for policy validation, retrieval, decision graph, and compliance scanning.
+## Features
 
-## Infrastructure Configuration and Deployment
+- Azure Functions Python programming model
+- LangChain + LangGraph orchestration
+- Microsoft Foundry OpenAI-compatible chat and embeddings
+- GPT-4o-mini as the default reasoning model
+- Cosmos DB vector search against the Enron email corpus
+- HTTP endpoint for Q&A over the Enron dataset
 
-Use `terraform/deploy-terraform.ps1` to initialize and deploy infrastructure.
+## Project structure
 
-### 1. Configure Deployment Parameters
+- `function_app.py` - Azure Function entry point
+- `app/rag_chain.py` - LangGraph RAG graph and document ingestion logic
+- `host.json` - Azure Functions host configuration
+- `requirements.txt` - Python dependencies
+- `local.settings.sample.json` - local settings template
 
-Before running the script, update these parameters in `terraform/deploy-terraform.ps1`:
+## Local setup
 
-- `SubscriptionId` (required): Your Azure subscription ID.
-- `ResourceGroup` (required): Resource group name for deployment.
-- `Environment` (required): Environment suffix used in resource naming (`dev`, `test`, `prod`, etc.).
-- `Region` (optional): Azure region display name (default is `West Europe`).
+1. Create and activate a virtual environment.
+2. Install dependencies:
 
-Optional AI Foundry and model deployment parameters:
+   ```bash
+   python -m venv .venv
+   .venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
 
-- `FoundryProjectName`: AI Foundry project name (default: `PolicyAwareRag`).
-- `GptModelDeploymentName`: Deployment name for the chat model (default: `gpt-5-5`).
-- `GptModelName`: Chat model name to deploy (default: `gpt-5.5`).
-- `GptModelVersion`: Chat model version. Leave blank to use provider/service defaults.
-- `GptModelSkuName`: Chat model SKU (default: `GlobalStandard`).
-- `GptModelCapacity`: Chat model capacity units (default: `10`).
+3. Copy `local.settings.sample.json` to `local.settings.json` and fill in your Microsoft Foundry values.
+4. Start the function app:
 
-The script derives Terraform values and naming prefixes from these parameters.
+   ```bash
+   func start
+   ```
 
-### 2. Prerequisites
+5. Send a request to the HTTP route:
 
-The following are required before deployment:
+   ```bash
+   curl -X POST http://localhost:7071/api/rag \
+     -H "Content-Type: application/json" \
+     -d '{"question":"Who was involved in the California energy trading discussions?"}'
+   ```
 
-- Azure CLI installed and available on `PATH`.
-- Terraform CLI installed and available on `PATH`.
-- Azure login completed with permissions to create/update resources in the target subscription/resource group.
-- Access to required Azure resource providers in your subscription.
+## Environment variables
 
-### 3. Deploy Infrastructure
+- `FOUNDRY_API_KEY`
+- `FOUNDRY_ENDPOINT` (for example: `https://<resource>.services.ai.azure.com/models` or the compatible OpenAI-style Foundry endpoint for your project)
+- `FOUNDRY_CHAT_MODEL` (set to `gpt-4o-mini`)
+- `FOUNDRY_EMBEDDING_MODEL` (for example: `text-embedding-3-small`)
+- `COSMOSDB_ENDPOINT`
+- `COSMOSDB_KEY`
+- `COSMOSDB_DATABASE`
+- `COSMOSDB_COLLECTION` (set to `EnronEmailVectorStore`)
+- `EMBEDDING_MODEL` (set to `all-MiniLM-L6-v2`)
 
-Run from the repository root:
+## Notes
 
-```powershell
-.\terraform\deploy-terraform.ps1
-```
-
-Or override parameters at runtime:
-
-```powershell
-.\terraform\deploy-terraform.ps1 -SubscriptionId "<subscription-id>" -ResourceGroup "<rg-name>" -Environment "dev" -Region "West Europe"
-```
-
-Example with explicit Foundry and model overrides:
-
-```powershell
-.\terraform\deploy-terraform.ps1 `
-	-SubscriptionId "<subscription-id>" `
-	-ResourceGroup "<rg-name>" `
-	-Environment "dev" `
-	-Region "West Europe" `
-	-FoundryProjectName "PolicyAwareRag" `
-	-GptModelDeploymentName "gpt-5-5" `
-	-GptModelName "gpt-5.5" `
-	-GptModelSkuName "GlobalStandard" `
-```
-
-> Model and SKU availability are region and subscription dependent. If deployment fails with model support errors, update model name/SKU/version or use a different region.
-
-### 4. Validate Deployment
-
-After deployment completes, review outputs:
-
-```powershell
-terraform -chdir=terraform output
-```
-
-Key outputs to note:
-
-- `function_app_name`: Azure Function App name.
-- `cosmos_db_endpoint`: Cosmos DB account endpoint.
-- `key_vault_id`: Key Vault resource id.
-- `ai_foundry_endpoint`: Azure AI Foundry endpoint.
-- `gpt_model_deployment_name`: Chat model deployment name.
-
-### 5. Load Sample Data
-
-Open `utils/Load_VectorDB.ipynb` in VS Code or Jupyter and run the cells from top to bottom.
-
-The notebook performs the following steps:
-
-1. Installs the notebook dependencies with `%pip install azure-cosmos requests tqdm sentence-transformers torch`.
-2. Downloads the Enron sample archive from CMU if it is not already cached locally.
-3. Parses and cleans the email data.
-4. Generates embeddings locally with `sentence-transformers`.
-5. Connects to Azure Cosmos DB and loads the records into the `EnronEmailVectorStore` container.
-
-Before running the notebook, set these environment variables in your notebook session or local settings:
-
-- `COSMOS_ENDPOINT`
-- `COSMOS_KEY`
-- `COSMOS_DATABASE`
-- `COSMOS_ENRON_COLLECTION`
-
-For this sample, the notebook expects `COSMOS_ENRON_COLLECTION` to match the Cosmos container name created by Terraform.
-
-After the notebook finishes, verify that the container contains the loaded sample records in Azure Cosmos DB.
-
-### 6. Run the Azure Function App
-
-This repository now includes the Azure Functions project root and a starter HTTP trigger that wires the existing orchestration and activities into a deployable Function App.
-
-The runtime is intended for Python on Linux with Durable Functions support, so the local environment should match the packages in `requirements.txt` and the app settings in `local.settings.json`.
-
-For local execution:
-
-1. Install Python 3.11 and Azure Functions Core Tools.
-2. Create and activate a virtual environment.
-3. Install the dependencies from `requirements.txt`.
-4. Set the local app settings to match your deployed resources, especially `AzureWebJobsStorage`, `FUNCTIONS_WORKER_RUNTIME`, `COSMOS_DB_ENDPOINT`, and `COSMOS_DB_DATABASE`.
-5. Start the host from the project root with Azure Functions Core Tools.
-6. Call `POST /api/orchestrators/start` with a JSON body that includes `cosmos_collection` to choose the Cosmos container the query should run against.
-
-For Azure execution:
-
-1. Use `terraform -chdir=terraform output` to get the deployed Function App name and supporting resource values.
-2. Confirm the Function App application settings match the deployed resources and secrets in Key Vault.
-3. Deploy the Python function code to the Azure Function App.
-4. Invoke `POST /api/orchestrators/start` with a payload that includes `principal`, `odrl_policy`, `query_embedding`, `action`, and `cosmos_collection`. The function app supplies the Cosmos endpoint and database from application settings.
-5. Use one of the policies in `odrl_policies/` to test a `business-observer`, `customer-support-specialist`, `privacy-compliance-analyst`, or `pii-data-governance-admin` role.
-6. Review Application Insights and Function App logs if the orchestration fails, returns a denied response, or redacts output.
-
-The orchestration derives Cosmos DB security filters from the validated ODRL policy before retrieval begins. To make this effective, documents in the vector container should carry matching `securityMetadata` fields for the normalized policy role, target, action, and purpose values produced by the policy validator.
-
-The orchestration function is registered in `function_app.py`, and the activity wrappers keep the current implementations in `orchestrator.py` and `activities.py` intact.
+The retrieval logic is designed to query the live Enron email vector store in Cosmos DB using the configured embedding model and the Foundry GPT-4o-mini chat model.
