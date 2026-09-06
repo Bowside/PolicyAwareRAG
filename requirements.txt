@@ -10,7 +10,7 @@ langchain==0.3.19
 # langchain-community==0.4.2
 langchain-community==0.3.18
 #langchain-openai==1.6.0
-langchain-openai==0.3.7
+langchain-openai==1.1.14
 #langchain-text-splitters==1.1.2
 langchain-text-splitters==0.3.6
 #langgraph==1.2.11
