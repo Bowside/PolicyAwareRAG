@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import requests
+from dotenv import load_dotenv
 
 try:
     from datasets import Dataset
@@ -31,6 +32,8 @@ except Exception:  # pragma: no cover - optional dependency fallback
     context_precision = None
     context_recall = None
     faithfulness = None
+
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 FUNCTION_APP_URL = os.getenv("FUNCTION_APP_URL", "http://localhost:7071/api/rag")
 FUNCTION_APP_KEY = os.getenv("FUNCTION_APP_KEY")
