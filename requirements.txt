@@ -8,7 +8,7 @@ azure-functions==2.3.0
 #langchain==1.4.0
 langchain==0.3.19
 # langchain-community==0.4.2
-langchain-community==0.3.18
+langchain-community==0.3.27
 #langchain-openai==1.6.0
 langchain-openai==0.3.7
 #langchain-text-splitters==1.1.2
