@@ -1,0 +1,17 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "FOUNDRY_API_KEY": "<your-microsoft-foundry-api-key>",
+    "FOUNDRY_ENDPOINT": "https://<your-resource>.services.ai.azure.com/models",
+    "FOUNDRY_CHAT_MODEL": "gpt-4o-mini",
+    "FOUNDRY_EMBEDDING_MODEL": "text-embedding-3-small",
+    "COSMOSDB_ENDPOINT": "https://<your-cosmos-account>.documents.azure.com:443/",
+    "COSMOSDB_KEY": "<your-cosmos-key>",
+    "COSMOSDB_DATABASE": "<your-database>",
+    "COSMOSDB_COLLECTION": "EnronEmailVectorStore",
+
+    "EMBEDDING_MODEL": "all-MiniLM-L6-v2"
+  }
+}
