@@ -330,8 +330,8 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
         case: Evaluation request definition produced by ``build_cases``.
 
     Returns:
-        A result record containing the response, latency, audit metrics, and
-        pass/fail status.
+        A result record containing the original prompt, raw response text,
+        parsed response, latency, audit metrics, and pass/fail status.
     """
     payload = {
         "question": case["question"],
@@ -353,6 +353,9 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
         response_json = response.json()
     except Exception:
         response_json = {}
+    response_text = getattr(response, "text", "")
+    if not response_text:
+        response_text = json.dumps(response_json, ensure_ascii=False)
 
     correlation_id = response_json.get("correlationId")
     user_query = case["question"]
@@ -387,6 +390,9 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "case_type": case["case_type"],
+        "original_prompt": user_query,
+        "request_payload": payload,
+        "response_text": response_text,
         "question": user_query,
         "userRoles": case["userRoles"],
         "purpose": case["purpose"],

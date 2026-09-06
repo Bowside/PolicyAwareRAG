@@ -74,3 +74,13 @@ tests/performance_evaluation/evaluation_results_<timestamp>.json
 ```
 
 The console reports the output path and the pass rate after the run completes. Evaluation result files are ignored by Git.
+
+Each result includes human-review fields at the top level:
+
+- `original_prompt`: the exact prompt sent to the Function App.
+- `request_payload`: the complete JSON request, including role, purpose, and action.
+- `response_text`: the raw response body returned by the Function App.
+- `response`: the parsed JSON response when the body is valid JSON.
+
+This makes it possible to review the original prompt beside the generated answer
+or error response without reconstructing the request from the metadata.
