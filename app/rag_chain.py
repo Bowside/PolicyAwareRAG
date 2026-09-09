@@ -31,6 +31,21 @@ load_dotenv()
 _EMBEDDING_MODEL = None
 
 
+def _estimate_tokens(value: Any) -> int:
+    """Estimate tokens from text using the evaluation harness heuristic.
+
+    Args:
+        value: Text whose approximate token count should be calculated.
+
+    Returns:
+        An estimated token count, or zero for empty input.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    return max(1, round(len(text) / 4.0))
+
+
 class RAGState(TypedDict):
     """Typed state passed between the LangGraph retrieval and answer steps."""
 
@@ -369,13 +384,34 @@ Return a concise but complete answer and cite the relevant email metadata you us
         Returns:
             The updated state containing the protected answer.
         """
-        start_time = perf_counter()
+        generation_start = perf_counter()
         chain = prompt | llm | StrOutputParser()
         answer = chain.invoke({
             "question": state["question"],
             "context": "\n\n".join(state["context"]),
         })
         request_audit_logger = audit_logger or AuditLogger()
+        request_audit_logger.emit(
+            step_name="BaseRAG",
+            execution_status="ALLOWED",
+            policy_metadata={
+                "roles": state.get("user_roles", []),
+                "purpose": state.get("purpose") or "metadata_review",
+                "action": state.get("action") or "retrieve",
+            },
+            telemetry={
+                "answerLength": len(answer),
+                "answerTokens": _estimate_tokens(answer),
+                "latencyMs": round((perf_counter() - generation_start) * 1000, 3),
+            },
+            correlation_id=state.get("correlation_id"),
+            user_id=state.get("user_id"),
+            prompt_text=state["question"],
+            response_text=answer,
+            reason="Base RAG answer generated from retrieved context.",
+            finalize=False,
+        )
+        validation_start = perf_counter()
         protected_answer = spokesperson_guardrail(
             state.get("context", []),
             answer,
@@ -393,8 +429,11 @@ Return a concise but complete answer and cite the relevant email metadata you us
             },
             telemetry={
                 "answerLength": len(answer),
+                "answerTokens": _estimate_tokens(protected_answer),
+                "inputAnswerTokens": _estimate_tokens(answer),
+                "outputAnswerTokens": _estimate_tokens(protected_answer),
                 "redacted": was_redacted,
-                "latencyMs": round((perf_counter() - start_time) * 1000, 3),
+                "latencyMs": round((perf_counter() - validation_start) * 1000, 3),
             },
             correlation_id=state.get("correlation_id"),
             user_id=state.get("user_id"),
