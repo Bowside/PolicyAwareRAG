@@ -1,3 +1,5 @@
+"""Test ODRL normalization, authorization, and policy-denial behavior."""
+
 import pytest
 
 from app.policy_guard import (
@@ -25,6 +27,12 @@ from app.policy_guard import (
     ],
 )
 def test_normalize_policy_role(raw_role, expected):
+    """Normalize role spellings to the canonical policy identifier.
+
+    Args:
+        raw_role: Input role spelling or URN to normalize.
+        expected: Canonical role value expected from normalization.
+    """
     assert normalize_policy_role(raw_role) == expected
 
 
@@ -39,6 +47,12 @@ def test_normalize_policy_role(raw_role, expected):
     ],
 )
 def test_normalize_policy_action(raw_action, expected):
+    """Normalize action spellings to the canonical policy identifier.
+
+    Args:
+        raw_action: Input action value to normalize.
+        expected: Canonical action value expected from normalization.
+    """
     assert normalize_policy_action(raw_action) == expected
 
 
@@ -53,6 +67,12 @@ def test_normalize_policy_action(raw_action, expected):
     ],
 )
 def test_normalize_policy_purpose(raw_purpose, expected):
+    """Normalize purpose spellings to the canonical policy identifier.
+
+    Args:
+        raw_purpose: Input purpose value to normalize.
+        expected: Canonical purpose value expected from normalization.
+    """
     assert normalize_policy_purpose(raw_purpose) == expected
 
 
@@ -70,6 +90,12 @@ def test_normalize_policy_purpose(raw_purpose, expected):
     ],
 )
 def test_infer_action_from_intent(intent, expected):
+    """Infer the policy action from a natural-language request.
+
+    Args:
+        intent: Natural-language request used for inference.
+        expected: Action expected from the intent classifier.
+    """
     assert infer_action_from_intent(intent) == expected
 
 
@@ -89,6 +115,12 @@ def test_infer_action_from_intent(intent, expected):
     ],
 )
 def test_infer_purpose_from_intent(intent, expected):
+    """Infer the policy purpose from a natural-language request.
+
+    Args:
+        intent: Natural-language request used for inference.
+        expected: Purpose expected from the intent classifier.
+    """
     assert infer_purpose_from_intent(intent) == expected
 
 
@@ -118,6 +150,13 @@ ADMIN_ALLOWED = [
 
 @pytest.mark.parametrize("role,purpose,action", OBSERVER_ALLOWED + SUPPORT_ALLOWED + PRIVACY_ALLOWED + ADMIN_ALLOWED)
 def test_odrl_allows_policy_defined_role_purpose_action(role, purpose, action):
+    """Allow role, purpose, and action combinations defined by ODRL policies.
+
+    Args:
+        role: Policy role assigned to the simulated caller.
+        purpose: Declared purpose of the simulated request.
+        action: Requested action for the simulated request.
+    """
     assert evaluate_intent_against_odrl(
         f"Perform {action} for {purpose}.",
         [role],
@@ -138,6 +177,13 @@ def test_odrl_allows_policy_defined_role_purpose_action(role, purpose, action):
     ],
 )
 def test_odrl_denies_policy_violations(role, purpose, action):
+    """Reject role, purpose, and action combinations forbidden by policy.
+
+    Args:
+        role: Policy role assigned to the simulated caller.
+        purpose: Declared purpose of the simulated request.
+        action: Requested action for the simulated request.
+    """
     with pytest.raises(PolicyViolationError, match="Policy denial"):
         evaluate_intent_against_odrl(
             f"Perform {action} for {purpose}.",

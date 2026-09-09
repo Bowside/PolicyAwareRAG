@@ -73,7 +73,11 @@ def normalize_policy_purpose(value: str | None) -> str:
 
 
 def _policies_path() -> Path:
-    """Return the repository path that contains the ODRL policy definitions."""
+    """Return the repository path that contains the ODRL policy definitions.
+
+    Returns:
+        The path to the repository's ``odrl_policies`` directory.
+    """
     return Path(__file__).resolve().parent.parent / "odrl_policies"
 
 

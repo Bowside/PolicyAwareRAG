@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 try:
     from datasets import Dataset
     from ragas import evaluate
-    from ragas.metrics import answer_relevancy, context_precision, context_recall, faithfulness
+    from ragas.metrics.collections import answer_relevancy, context_precision, context_recall, faithfulness
 except Exception:  # pragma: no cover - optional dependency fallback
     Dataset = None
     evaluate = None
@@ -43,7 +43,11 @@ RESULTS_DIR = Path(__file__).resolve().parent
 
 
 def utc_now() -> str:
-    """Return the current UTC time formatted for result filenames."""
+    """Return the current UTC time formatted for result filenames.
+
+    Returns:
+        A filename-safe UTC timestamp in ``YYYY-MM-DDTHH-MM-SSZ`` format.
+    """
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
 
 
@@ -116,7 +120,7 @@ def extract_step_metrics(audit_record: Dict[str, Any], user_query: str) -> List[
         A list of normalized step metric dictionaries.
     """
     steps: List[Dict[str, Any]] = []
-    pipeline_steps = audit_record.get("pipelineSteps") or []
+    pipeline_steps = audit_record.get("pipelineSteps") or audit_record.get("pipeline_steps") or []
     if not isinstance(pipeline_steps, list):
         return steps
 
@@ -126,10 +130,12 @@ def extract_step_metrics(audit_record: Dict[str, Any], user_query: str) -> List[
         telemetry = step.get("telemetry") or {}
         if not isinstance(telemetry, dict):
             telemetry = {}
-        step_name = step.get("stepName", "unknown")
+        step_name = step.get("stepName") or step.get("step_name") or step.get("name")
+        if not isinstance(step_name, str) or not step_name.strip():
+            continue
         step_record = {
-            "stepName": step_name,
-            "executionStatus": step.get("executionStatus", "UNKNOWN"),
+            "stepName": step_name.strip(),
+            "executionStatus": step.get("executionStatus") or step.get("execution_status") or "UNKNOWN",
             "latency_ms": float(telemetry.get("latencyMs") or telemetry.get("elapsedMs") or telemetry.get("responseTimeMs") or 0),
             "query_tokens": estimate_tokens(step.get("userQuery") or user_query),
             "answer_tokens": int(telemetry.get("answerLength") or telemetry.get("responseLength") or 0),

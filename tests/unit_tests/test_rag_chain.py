@@ -1,3 +1,5 @@
+"""Test RAG configuration, retrieval, policy enforcement, and audit behavior."""
+
 import json
 import os
 from unittest.mock import MagicMock, patch
@@ -18,10 +20,15 @@ from app.rag_chain import (
     get_foundry_settings,
     retrieve_documents,
 )
+from tests.performance_evaluation.run_evaluations import extract_step_metrics
 
 
 def test_get_foundry_settings_uses_environment_values(monkeypatch):
-    """Ensure Foundry settings are loaded from environment variables."""
+    """Ensure Foundry settings are loaded from environment variables.
+
+    Args:
+        monkeypatch: Pytest fixture used to set environment variables.
+    """
     monkeypatch.setenv("FOUNDRY_ENDPOINT", "https://example.services.ai.azure.com/models")
     monkeypatch.setenv("FOUNDRY_API_KEY", "test-key")
     monkeypatch.setenv("FOUNDRY_CHAT_MODEL", "gpt-4o-mini")
@@ -35,8 +42,39 @@ def test_get_foundry_settings_uses_environment_values(monkeypatch):
     assert settings["embedding_model"] == "text-embedding-3-small"
 
 
+def test_extract_step_metrics_preserves_named_audit_steps():
+    """Ensure evaluation records retain names and measured step latency."""
+    metrics = extract_step_metrics(
+        {
+            "pipelineSteps": [
+                {
+                    "stepName": "ContextRetrieval",
+                    "executionStatus": "ALLOWED",
+                    "telemetry": {"latencyMs": 12.5, "documentMatchCount": 3},
+                },
+                {
+                    "step_name": "SpokespersonValidation",
+                    "execution_status": "ALLOWED",
+                    "telemetry": {"elapsedMs": 4.25},
+                },
+            ],
+        },
+        "Summarize the request.",
+    )
+
+    assert [step["stepName"] for step in metrics] == [
+        "ContextRetrieval",
+        "SpokespersonValidation",
+    ]
+    assert [step["latency_ms"] for step in metrics] == [12.5, 4.25]
+
+
 def test_get_foundry_settings_uses_defaults_when_missing(monkeypatch):
-    """Ensure default Foundry values are used when the environment is empty."""
+    """Ensure default Foundry values are used when the environment is empty.
+
+    Args:
+        monkeypatch: Pytest fixture used to clear environment variables.
+    """
     monkeypatch.delenv("FOUNDRY_ENDPOINT", raising=False)
     monkeypatch.delenv("FOUNDRY_API_KEY", raising=False)
     monkeypatch.delenv("FOUNDRY_CHAT_MODEL", raising=False)
@@ -51,7 +89,11 @@ def test_get_foundry_settings_uses_defaults_when_missing(monkeypatch):
 
 
 def test_get_cosmos_settings_uses_environment_values(monkeypatch):
-    """Ensure Cosmos settings are loaded from environment variables."""
+    """Ensure Cosmos settings are loaded from environment variables.
+
+    Args:
+        monkeypatch: Pytest fixture used to set environment variables.
+    """
     monkeypatch.setenv("COSMOSDB_ENDPOINT", "https://example.documents.azure.com:443/")
     monkeypatch.setenv("COSMOSDB_KEY", "test-cosmos-key")
     monkeypatch.setenv("COSMOSDB_DATABASE", "policy_rag_db")
@@ -69,7 +111,12 @@ def test_get_cosmos_settings_uses_environment_values(monkeypatch):
 
 @patch("app.rag_chain.get_cosmos_container")
 def test_build_vector_store_uses_cosmos_container(mock_get_cosmos_container, monkeypatch):
-    """Ensure the vector store is built from the configured Cosmos container."""
+    """Ensure the vector store is built from the configured Cosmos container.
+
+    Args:
+        mock_get_cosmos_container: Mocked Cosmos container factory.
+        monkeypatch: Pytest fixture used to set Cosmos configuration.
+    """
     monkeypatch.setenv("COSMOSDB_ENDPOINT", "https://example.documents.azure.com:443/")
     monkeypatch.setenv("COSMOSDB_KEY", "test-cosmos-key")
     monkeypatch.setenv("COSMOSDB_DATABASE", "policy_rag_db")
@@ -90,7 +137,14 @@ def test_build_rag_chain_instantiates_graph_components(
     mock_chat_openai,
     monkeypatch,
 ):
-    """Ensure the LangGraph pipeline is configured with the expected nodes."""
+    """Ensure the LangGraph pipeline is configured with the expected nodes.
+
+    Args:
+        mock_prompt_template: Mocked prompt template factory.
+        mock_state_graph: Mocked LangGraph state graph.
+        mock_chat_openai: Mocked Foundry chat client.
+        monkeypatch: Pytest fixture used to set Foundry configuration.
+    """
     monkeypatch.setenv("FOUNDRY_ENDPOINT", "https://example.services.ai.azure.com/models")
     monkeypatch.setenv("FOUNDRY_API_KEY", "test-key")
 
@@ -212,7 +266,12 @@ def test_audit_logger_emits_privacy_safe_schema():
 @patch("app.rag_chain.get_cosmos_container")
 @patch("app.rag_chain.embed_query")
 def test_retrieve_documents_filters_by_security_metadata(mock_embed_query, mock_get_cosmos_container):
-    """Ensure role metadata filtering removes unauthorized records and keeps safe ones."""
+    """Ensure role metadata filtering removes unauthorized records and keeps safe ones.
+
+    Args:
+        mock_embed_query: Mocked embedding function.
+        mock_get_cosmos_container: Mocked Cosmos container factory.
+    """
     mock_embed_query.return_value = [0.1, 0.2, 0.3]
     mock_get_cosmos_container.return_value.query_items.return_value = [
         {

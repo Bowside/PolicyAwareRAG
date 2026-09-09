@@ -1,3 +1,9 @@
+"""LangGraph orchestration for policy-aware retrieval and answer generation.
+
+The module embeds queries, retrieves policy-filtered documents from Cosmos DB,
+generates an answer with Microsoft Foundry, and records pipeline telemetry.
+"""
+
 import os
 from time import perf_counter
 from typing import Any, Dict, List, Sequence
@@ -153,7 +159,24 @@ def retrieve_documents(
     user_id: str | None = None,
     audit_logger: AuditLogger | None = None,
 ) -> List[Document]:
-    """Retrieve relevant documents for the caller after ODRL validation and role filtering.
+    """Retrieve relevant documents after ODRL validation and role filtering.
+
+    Args:
+        question: Natural-language request used for retrieval.
+        user_roles: Caller roles used for policy validation and filtering.
+        purpose: Declared purpose of the request.
+        action: Declared action for the request.
+        correlation_id: Request identifier used for audit aggregation.
+        user_id: Caller identifier used for audit pseudonymization.
+        audit_logger: Optional logger for retrieval telemetry.
+
+    Returns:
+        Documents that match retrieval and role-filtering requirements.
+
+    Raises:
+        PolicyViolationError: If the request is not authorized.
+        ValueError: If required Cosmos or embedding configuration is missing.
+        Exception: If the vector query fails.
 
     Cosmos DB can reject complex nested-array predicates in some vector-query shapes,
     so we intentionally keep the query broad and apply the role enforcement in Python
@@ -275,7 +298,14 @@ def retrieve_context(question: str, user_roles: Sequence[str] | None = None, pur
 
 
 def build_rag_graph(audit_logger: AuditLogger | None = None):
-    """Build the LangGraph pipeline used to retrieve and answer the query."""
+    """Build the LangGraph pipeline used to retrieve and answer a query.
+
+    Args:
+        audit_logger: Optional request-scoped logger shared by pipeline nodes.
+
+    Returns:
+        A compiled LangGraph workflow.
+    """
     settings = get_foundry_settings()
 
     llm = ChatOpenAI(
@@ -299,7 +329,14 @@ Return a concise but complete answer and cite the relevant email metadata you us
     )
 
     def retrieve(state: RAGState) -> RAGState:
-        """Retrieve the policy-safe document set for the current question."""
+        """Retrieve the policy-safe document set for the current question.
+
+        Args:
+            state: Current RAG graph state containing the request details.
+
+        Returns:
+            The updated state with retrieved context and source identifiers.
+        """
         user_roles = state.get("user_roles", [])
         purpose = state.get("purpose") or "metadata_review"
         action = state.get("action") or "retrieve"
@@ -324,7 +361,14 @@ Return a concise but complete answer and cite the relevant email metadata you us
         return state
 
     def answer(state: RAGState) -> RAGState:
-        """Generate the final answer and apply the spokesperson guardrail."""
+        """Generate the final answer and apply the spokesperson guardrail.
+
+        Args:
+            state: Current RAG graph state containing retrieved context.
+
+        Returns:
+            The updated state containing the protected answer.
+        """
         start_time = perf_counter()
         chain = prompt | llm | StrOutputParser()
         answer = chain.invoke({
