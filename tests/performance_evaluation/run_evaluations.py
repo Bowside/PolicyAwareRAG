@@ -36,8 +36,7 @@ except Exception:  # pragma: no cover - optional dependency fallback
     faithfulness = None
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
-FUNCTION_APP_URL = "http://localhost:7071/api/rag"
-#FUNCTION_APP_URL = os.getenv("FUNCTION_APP_URL", "http://localhost:7071/api/rag")
+FUNCTION_APP_URL = os.getenv("FUNCTION_APP_URL", "http://localhost:7071/api/rag")
 FUNCTION_APP_KEY = os.getenv("FUNCTION_APP_KEY")
 RESULTS_DIR = Path(__file__).resolve().parent
 REFERENCE_ANSWERS_PATH = RESULTS_DIR / "reference_answers.json"
