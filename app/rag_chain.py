@@ -5,6 +5,7 @@ generates an answer with Microsoft Foundry, and records pipeline telemetry.
 """
 
 import os
+import re
 from time import perf_counter
 from typing import Any, Dict, List, Sequence
 
@@ -52,6 +53,7 @@ class RAGState(TypedDict):
     question: str
     context: List[str]
     answer: str
+    base_answer: str
     sources: List[str]
     user_roles: List[str]
     purpose: str
@@ -165,6 +167,52 @@ def _normalize_roles(user_roles: Sequence[str] | None) -> List[str]:
     return normalized
 
 
+def _rerank_documents(question: str, documents: List[Document], limit: int = 8) -> List[Document]:
+    """Rerank vector results with lightweight query-term overlap.
+
+    Args:
+        question: User query used to identify salient terms.
+        documents: Vector-retrieved documents in similarity order.
+        limit: Maximum number of documents returned to generation.
+
+    Returns:
+        A bounded list ordered by lexical overlap, with vector order as a tie-breaker.
+    """
+    query_terms = {term for term in re.findall(r"[a-z0-9]+", question.lower()) if len(term) > 2}
+    scored_documents = []
+    for position, document in enumerate(documents):
+        text = " ".join(
+            str(document.metadata.get(field) or "")
+            for field in ("subject", "from", "date")
+        ) + " " + document.page_content
+        document_terms = set(re.findall(r"[a-z0-9]+", text.lower()))
+        overlap = len(query_terms & document_terms)
+        scored_documents.append((overlap, -position, document))
+    scored_documents.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [document for _, _, document in scored_documents[:limit]]
+
+
+def _format_context_document(document: Document) -> str:
+    """Format one retrieved document with stable source metadata.
+
+    Args:
+        document: Retrieved document with source metadata and body text.
+
+    Returns:
+        A labeled evidence block for the answer prompt.
+    """
+    metadata = document.metadata
+    return "\n".join(
+        [
+            f"[Source: {metadata.get('source', 'unknown')}]",
+            f"Subject: {metadata.get('subject') or 'Not available'}",
+            f"From: {metadata.get('from') or 'Not available'}",
+            f"Date: {metadata.get('date') or 'Not available'}",
+            f"Body: {document.page_content}",
+        ]
+    )
+
+
 def retrieve_documents(
     question: str,
     user_roles: Sequence[str] | None = None,
@@ -272,6 +320,8 @@ def retrieve_documents(
             )
         )
 
+    documents = _rerank_documents(question, documents)
+
     if audit_logger is not None:
         audit_logger.emit(
             step_name="ContextRetrieval",
@@ -332,14 +382,20 @@ def build_rag_graph(audit_logger: AuditLogger | None = None):
 
     prompt = ChatPromptTemplate.from_template(
         """
-You are a helpful assistant analyzing the Enron email corpus. Use only the retrieved email context to answer the user's question.
+You are a careful evidence-grounded assistant analyzing the Enron email corpus.
+
+Use only facts directly supported by the retrieved context. For every factual
+claim, cite the supporting source ID in square brackets. Do not infer names,
+dates, causes, or relationships that are not stated in the context. If the
+context is insufficient, say so explicitly instead of guessing. Prefer a
+short, qualified answer over unsupported detail.
 
 Context:
 {context}
 
 Question: {question}
 
-Return a concise but complete answer and cite the relevant email metadata you used.
+Return a concise answer with the relevant supported findings and source IDs.
 """
     )
 
@@ -368,7 +424,7 @@ Return a concise but complete answer and cite the relevant email metadata you us
             user_id=user_id,
             audit_logger=request_audit_logger,
         )
-        state["context"] = [doc.page_content for doc in docs]
+        state["context"] = [_format_context_document(doc) for doc in docs]
         state["sources"] = [
             doc.metadata.get("source", "unknown")
             for doc in docs
@@ -443,6 +499,7 @@ Return a concise but complete answer and cite the relevant email metadata you us
             finalize=False,
         )
         state["answer"] = protected_answer
+        state["base_answer"] = answer
         return state
 
     graph = StateGraph(RAGState)

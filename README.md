@@ -10,11 +10,14 @@ A Python Azure Functions app for Enron email retrieval using LangChain, LangGrap
 - GPT-4o-mini as the default reasoning model
 - Cosmos DB vector search against the Enron email corpus
 - HTTP endpoint for Q&A over the Enron dataset
+- Evidence-grounded answers with source-labeled context and policy guardrails
+- Evaluation tooling for latency, token usage, retrieval context, and RAGAS quality metrics
 
 ## Project structure
 
 - `function_app.py` - Azure Function entry point
-- `app/rag_chain.py` - LangGraph RAG graph and document ingestion logic
+- `app/rag_chain.py` - LangGraph retrieval, reranking, evidence formatting, and answer generation
+- `tests/performance_evaluation/` - Evaluation harness, analysis notebook, and publication-ready figures
 - `host.json` - Azure Functions host configuration
 - `requirements.txt` - Python dependencies
 - `local.settings.sample.json` - local settings template
@@ -56,7 +59,12 @@ A Python Azure Functions app for Enron email retrieval using LangChain, LangGrap
 - `COSMOSDB_DATABASE`
 - `COSMOSDB_COLLECTION` (set to `EnronEmailVectorStore`)
 - `EMBEDDING_MODEL` (set to `all-MiniLM-L6-v2`)
+- `ENABLE_EVALUATION_DETAILS` (set to `true` only for controlled evaluation runs that need the pre-guardrail answer)
 
 ## Notes
 
 The retrieval logic is designed to query the live Enron email vector store in Cosmos DB using the configured embedding model and the Foundry GPT-4o-mini chat model.
+
+Retrieved candidates are policy-filtered, reranked using query-term overlap, and bounded before answer generation. The answer prompt requires claims to be supported by source-labeled evidence and to cite source IDs. Normal API responses expose the final guarded answer only; pre-guardrail answers are returned only when `ENABLE_EVALUATION_DETAILS=true` and the request explicitly asks for evaluation details.
+
+For evaluation setup, result interpretation, RAGAS metrics, token-stage reporting, and chart exports, see [tests/performance_evaluation/README.md](tests/performance_evaluation/README.md).

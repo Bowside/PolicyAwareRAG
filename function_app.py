@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from time import perf_counter
 import uuid
 
@@ -131,15 +132,22 @@ def rag_http(req: func.HttpRequest) -> func.HttpResponse:
             finalize=True,
         )
 
-        return func.HttpResponse(
-            json.dumps({
+        response_body = {
                 "question": question,
                 "answer": final_answer,
                 "sources": result.get("sources", []),
                 "userRoles": user_roles,
                 "purpose": purpose or "metadata_review",
                 "correlationId": correlation_id,
-            }),
+        }
+        if (
+            os.getenv("ENABLE_EVALUATION_DETAILS", "false").lower() == "true"
+            and payload.get("includeEvaluationDetails") is True
+        ):
+            response_body["evaluationDetails"] = {"baseAnswer": result.get("base_answer", "")}
+
+        return func.HttpResponse(
+            json.dumps(response_body),
             mimetype="application/json",
             status_code=200,
         )
