@@ -4,7 +4,6 @@ __pycache__/
 .pytest_cache/
 .vscode/
 terraform/
-tests/
 utils/
 .env
 local.settings.json
