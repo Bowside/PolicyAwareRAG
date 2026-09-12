@@ -20,12 +20,23 @@ from azure.cosmos import CosmosClient
 
 
 def _utc_timestamp() -> str:
-    """Return an ISO 8601 UTC timestamp for audit entries."""
+    """Return an ISO 8601 UTC timestamp for audit entries.
+
+    Returns:
+        A UTC timestamp with a ``Z`` suffix.
+    """
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _hash_value(value: Any) -> str:
-    """Return a SHA-256 digest for sensitive values that must be anonymized."""
+    """Return a SHA-256 digest for sensitive values that must be anonymized.
+
+    Args:
+        value: The value to serialize and hash. ``None`` produces an empty string.
+
+    Returns:
+        The hexadecimal SHA-256 digest, or an empty string for ``None``.
+    """
     if value is None:
         return ""
     if not isinstance(value, (str, bytes)):
@@ -52,6 +63,14 @@ class AuditLogger:
         database: str | None = None,
         container_name: str = "AuditStorage",
     ) -> None:
+        """Initialize an audit logger and its request-step buffer.
+
+        Args:
+            endpoint: Optional Cosmos DB endpoint. Defaults to the environment.
+            key: Optional Cosmos DB credential. Defaults to the environment.
+            database: Optional database name. Defaults to the environment.
+            container_name: Name of the audit container.
+        """
         self.endpoint = endpoint or os.getenv("COSMOSDB_ENDPOINT")
         self.key = key or os.getenv("COSMOSDB_KEY")
         self.database_name = database or os.getenv("COSMOSDB_DATABASE")
@@ -60,7 +79,11 @@ class AuditLogger:
         self._pending_steps: dict[str, list[dict[str, Any]]] = {}
 
     def _get_container(self):
-        """Return the configured AuditStorage container if Cosmos is configured."""
+        """Return the configured AuditStorage container if Cosmos is configured.
+
+        Returns:
+            The Cosmos container client, or ``None`` when configuration is absent.
+        """
         if self._container is not None:
             return self._container
         if not self.endpoint or not self.key:
@@ -86,7 +109,23 @@ class AuditLogger:
         document_ids: Iterable[str] | None = None,
         reason: str | None = None,
     ) -> dict[str, Any]:
-        """Build the canonical audit payload for a pipeline step."""
+        """Build the canonical audit payload for a pipeline step.
+
+        Args:
+            step_name: Name of the pipeline step.
+            execution_status: Policy or execution status for the step.
+            policy_metadata: Structural policy metadata for the request.
+            telemetry: Timing and count measurements for the step.
+            correlation_id: Request correlation identifier.
+            user_id: Caller identifier to pseudonymize.
+            prompt_text: Optional request text stored for traceability.
+            prompt_hash: Optional precomputed prompt hash.
+            document_ids: Optional identifiers of candidate documents.
+            reason: Optional explanation for the step outcome.
+
+        Returns:
+            A privacy-safe audit payload dictionary.
+        """
         payload = {
             "id": str(uuid.uuid4()),
             "timestamp": _utc_timestamp(),
@@ -116,7 +155,15 @@ class AuditLogger:
         correlation_id: str | None,
         current_entry: dict[str, Any],
     ) -> dict[str, Any]:
-        """Merge the queued request steps into one request-level audit record."""
+        """Merge the queued request steps into one request-level audit record.
+
+        Args:
+            correlation_id: Request identifier used to find queued steps.
+            current_entry: Final step entry for the request.
+
+        Returns:
+            A consolidated request-level audit record.
+        """
         request_id = correlation_id or current_entry.get("correlationId") or str(uuid.uuid4())
         pipeline_steps = self._pending_steps.pop(request_id, [])
         if current_entry not in pipeline_steps:
@@ -162,7 +209,24 @@ class AuditLogger:
         reason: str | None = None,
         finalize: bool = True,
     ) -> None:
-        """Persist one or more audit steps while aggregating them by correlation ID."""
+        """Persist one or more audit steps while aggregating by correlation ID.
+
+        Args:
+            step_name: Name of the pipeline step.
+            execution_status: Policy or execution status for the step.
+            policy_metadata: Structural policy metadata for the request.
+            telemetry: Timing and count measurements for the step.
+            correlation_id: Request correlation identifier.
+            user_id: Caller identifier to pseudonymize.
+            prompt_text: Optional request text for audit traceability.
+            response_text: Optional response text, not persisted directly.
+            document_ids: Optional candidate document identifiers.
+            reason: Optional explanation for the step outcome.
+            finalize: Whether to persist the consolidated request record.
+
+        Returns:
+            ``None``. Audit failures are handled without escaping the request.
+        """
         container = self._get_container()
         if container is None:
             return
@@ -206,7 +270,24 @@ class AuditLogger:
         reason: str | None = None,
         finalize: bool = True,
     ) -> None:
-        """Persist an audit entry without exposing failures to the caller."""
+        """Persist an audit entry without exposing failures to the caller.
+
+        Args:
+            step_name: Name of the pipeline step.
+            execution_status: Policy or execution status for the step.
+            policy_metadata: Structural policy metadata for the request.
+            telemetry: Timing and count measurements for the step.
+            correlation_id: Request correlation identifier.
+            user_id: Caller identifier to pseudonymize.
+            prompt_text: Optional request text for audit traceability.
+            response_text: Optional response text, not persisted directly.
+            document_ids: Optional candidate document identifiers.
+            reason: Optional explanation for the step outcome.
+            finalize: Whether to persist the consolidated request record.
+
+        Returns:
+            ``None``. Audit failures are logged and suppressed.
+        """
         try:
             try:
                 loop = asyncio.get_running_loop()

@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 try:
     from datasets import Dataset
     from ragas import evaluate
-    from ragas.metrics import answer_relevancy, context_precision, context_recall, faithfulness
+    from ragas.metrics.collections import answer_relevancy, context_precision, context_recall, faithfulness
 except Exception:  # pragma: no cover - optional dependency fallback
     Dataset = None
     evaluate = None
@@ -36,14 +36,19 @@ except Exception:  # pragma: no cover - optional dependency fallback
     faithfulness = None
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
-
-FUNCTION_APP_URL = os.getenv("FUNCTION_APP_URL", "http://localhost:7071/api/rag")
+FUNCTION_APP_URL = "http://localhost:7071/api/rag"
+#FUNCTION_APP_URL = os.getenv("FUNCTION_APP_URL", "http://localhost:7071/api/rag")
 FUNCTION_APP_KEY = os.getenv("FUNCTION_APP_KEY")
 RESULTS_DIR = Path(__file__).resolve().parent
+REFERENCE_ANSWERS_PATH = RESULTS_DIR / "reference_answers.json"
 
 
 def utc_now() -> str:
-    """Return the current UTC time formatted for result filenames."""
+    """Return the current UTC time formatted for result filenames.
+
+    Returns:
+        A filename-safe UTC timestamp in ``YYYY-MM-DDTHH-MM-SSZ`` format.
+    """
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
 
 
@@ -77,6 +82,7 @@ def get_audit_record(correlation_id: Optional[str]) -> Dict[str, Any]:
     """
     if not correlation_id:
         return {}
+
     cosmos_endpoint = os.getenv("COSMOSDB_ENDPOINT")
     cosmos_key = os.getenv("COSMOSDB_KEY")
     cosmos_database = os.getenv("COSMOSDB_DATABASE", "policy_rag_db")
@@ -105,6 +111,73 @@ def get_audit_record(correlation_id: Optional[str]) -> Dict[str, Any]:
         return {}
 
 
+def get_evaluation_context(audit_record: Dict[str, Any]) -> List[str]:
+    """Resolve audited document IDs to document text for grounded evaluation.
+
+    Args:
+        audit_record: Request audit record containing candidate document IDs.
+
+    Returns:
+        Retrieved document bodies in audit order, or an empty list when the
+        audit record or Cosmos configuration is unavailable.
+    """
+    document_ids = audit_record.get("candidateDocumentIds") or []
+    if not document_ids:
+        for step in audit_record.get("pipelineSteps") or []:
+            if isinstance(step, dict) and step.get("candidateDocumentIds"):
+                document_ids = step["candidateDocumentIds"]
+                break
+    if not document_ids:
+        return []
+    cosmos_endpoint = os.getenv("COSMOSDB_ENDPOINT")
+    cosmos_key = os.getenv("COSMOSDB_KEY")
+    if not cosmos_endpoint or not cosmos_key:
+        return []
+
+    try:
+        from azure.cosmos import CosmosClient
+    except Exception:
+        return []
+
+    try:
+        database_name = os.getenv("COSMOSDB_DATABASE", "policy_rag_db")
+        container_name = os.getenv("COSMOSDB_COLLECTION", "EnronEmailVectorStore")
+        client = CosmosClient(url=cosmos_endpoint, credential=cosmos_key)
+        container = client.get_database_client(database_name).get_container_client(container_name)
+        context_by_id: Dict[str, str] = {}
+        for document_id in document_ids:
+            records = list(
+                container.query_items(
+                    query="SELECT c.id, c.subject, c.body FROM c WHERE c.id = @id",
+                    parameters=[{"name": "@id", "value": str(document_id)}],
+                    enable_cross_partition_query=True,
+                )
+            )
+            if records:
+                record = records[0]
+                context_by_id[str(document_id)] = str(record.get("body") or record.get("subject") or "")
+        return [context_by_id[str(document_id)] for document_id in document_ids if str(document_id) in context_by_id]
+    except Exception:
+        return []
+
+
+def load_reference_answers(path: Path = REFERENCE_ANSWERS_PATH) -> Dict[str, str]:
+    """Load optional human-curated reference answers.
+
+    Args:
+        path: JSON file mapping exact evaluation questions to reference answers.
+
+    Returns:
+        A question-to-reference-answer mapping, or an empty mapping if absent.
+    """
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
 def extract_step_metrics(audit_record: Dict[str, Any], user_query: str) -> List[Dict[str, Any]]:
     """Convert pipeline audit steps into compact evaluation metrics.
 
@@ -116,7 +189,7 @@ def extract_step_metrics(audit_record: Dict[str, Any], user_query: str) -> List[
         A list of normalized step metric dictionaries.
     """
     steps: List[Dict[str, Any]] = []
-    pipeline_steps = audit_record.get("pipelineSteps") or []
+    pipeline_steps = audit_record.get("pipelineSteps") or audit_record.get("pipeline_steps") or []
     if not isinstance(pipeline_steps, list):
         return steps
 
@@ -126,13 +199,21 @@ def extract_step_metrics(audit_record: Dict[str, Any], user_query: str) -> List[
         telemetry = step.get("telemetry") or {}
         if not isinstance(telemetry, dict):
             telemetry = {}
-        step_name = step.get("stepName", "unknown")
+        step_name = step.get("stepName") or step.get("step_name") or step.get("name")
+        if not isinstance(step_name, str) or not step_name.strip():
+            continue
         step_record = {
-            "stepName": step_name,
-            "executionStatus": step.get("executionStatus", "UNKNOWN"),
+            "stepName": step_name.strip(),
+            "executionStatus": step.get("executionStatus") or step.get("execution_status") or "UNKNOWN",
             "latency_ms": float(telemetry.get("latencyMs") or telemetry.get("elapsedMs") or telemetry.get("responseTimeMs") or 0),
             "query_tokens": estimate_tokens(step.get("userQuery") or user_query),
-            "answer_tokens": int(telemetry.get("answerLength") or telemetry.get("responseLength") or 0),
+            "answer_tokens": float(
+                telemetry.get("answerTokens")
+                or telemetry.get("responseTokens")
+                or estimate_tokens(telemetry.get("answerLength") or telemetry.get("responseLength") or 0)
+            ),
+            "input_answer_tokens": float(telemetry.get("inputAnswerTokens") or 0),
+            "output_answer_tokens": float(telemetry.get("outputAnswerTokens") or 0),
             "document_count": telemetry.get("documentMatchCount"),
             "reason": step.get("reason"),
         }
@@ -339,6 +420,7 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
         "purpose": case["purpose"],
         "action": case["action"],
         "userId": case.get("userId", "eval-user"),
+        "includeEvaluationDetails": os.getenv("ENABLE_EVALUATION_DETAILS", "false").lower() == "true",
     }
     headers = {"Content-Type": "application/json"}
     if FUNCTION_APP_KEY:
@@ -364,7 +446,11 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
     total_step_latency_ms = sum(step.get("latency_ms", 0) for step in step_metrics)
 
     answer = str(response_json.get("answer") or "")
+    base_answer = str(response_json.get("evaluationDetails", {}).get("baseAnswer") or answer)
+    reference_answers = load_reference_answers()
+    reference_answer = reference_answers.get(user_query)
     sources = response_json.get("sources") or []
+    evaluation_contexts = get_evaluation_context(audit_record)
     actual_outcome = normalize_outcome(response_json, response.status_code)
 
     ragas_result = None
@@ -373,18 +459,40 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
             dataset = Dataset.from_dict({
                 "question": [user_query],
                 "answer": [answer],
-                "contexts": [[str(item) for item in sources]],
+                "contexts": [evaluation_contexts],
             })
-            score_data = evaluate(
-                dataset,
-                metrics=[
-                    answer_relevancy,
-                    context_precision,
-                    context_recall,
-                    faithfulness,
-                ],
-            )
-            ragas_result = {key: float(value) for key, value in score_data.to_dict().items() if isinstance(value, (int, float))}
+            if reference_answer:
+                dataset = Dataset.from_dict({
+                    "question": [user_query],
+                    "answer": [answer],
+                    "contexts": [evaluation_contexts],
+                    "reference": [reference_answer],
+                })
+            metrics = [answer_relevancy, faithfulness]
+            if reference_answer:
+                metrics.extend([context_precision, context_recall])
+            score_data = evaluate(dataset, metrics=metrics)
+            final_scores = score_data.scores[0]
+            ragas_result = {
+                f"final_{key}": float(value)
+                for key, value in final_scores.items()
+                if isinstance(value, (int, float))
+            }
+            if base_answer != answer:
+                base_dataset = Dataset.from_dict({
+                    "question": [user_query],
+                    "answer": [base_answer],
+                    "contexts": [evaluation_contexts],
+                })
+                base_score_data = evaluate(
+                    base_dataset,
+                    metrics=[answer_relevancy, faithfulness],
+                )
+                ragas_result.update({
+                    f"base_{key}": float(value)
+                    for key, value in base_score_data.scores[0].items()
+                    if isinstance(value, (int, float))
+                })
         except Exception:
             ragas_result = None
 
@@ -409,6 +517,9 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
         },
         "step_metrics": step_metrics,
         "response": response_json,
+        "base_answer": base_answer,
+        "reference": reference_answer,
+        "evaluation_contexts": evaluation_contexts,
         "correlationId": correlation_id,
         "passed": actual_outcome in case.get(
             "acceptable_outcomes",

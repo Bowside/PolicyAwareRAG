@@ -1,4 +1,11 @@
+"""LangGraph orchestration for policy-aware retrieval and answer generation.
+
+The module embeds queries, retrieves policy-filtered documents from Cosmos DB,
+generates an answer with Microsoft Foundry, and records pipeline telemetry.
+"""
+
 import os
+import re
 from time import perf_counter
 from typing import Any, Dict, List, Sequence
 
@@ -25,12 +32,28 @@ load_dotenv()
 _EMBEDDING_MODEL = None
 
 
+def _estimate_tokens(value: Any) -> int:
+    """Estimate tokens from text using the evaluation harness heuristic.
+
+    Args:
+        value: Text whose approximate token count should be calculated.
+
+    Returns:
+        An estimated token count, or zero for empty input.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    return max(1, round(len(text) / 4.0))
+
+
 class RAGState(TypedDict):
     """Typed state passed between the LangGraph retrieval and answer steps."""
 
     question: str
     context: List[str]
     answer: str
+    base_answer: str
     sources: List[str]
     user_roles: List[str]
     purpose: str
@@ -144,6 +167,52 @@ def _normalize_roles(user_roles: Sequence[str] | None) -> List[str]:
     return normalized
 
 
+def _rerank_documents(question: str, documents: List[Document], limit: int = 8) -> List[Document]:
+    """Rerank vector results with lightweight query-term overlap.
+
+    Args:
+        question: User query used to identify salient terms.
+        documents: Vector-retrieved documents in similarity order.
+        limit: Maximum number of documents returned to generation.
+
+    Returns:
+        A bounded list ordered by lexical overlap, with vector order as a tie-breaker.
+    """
+    query_terms = {term for term in re.findall(r"[a-z0-9]+", question.lower()) if len(term) > 2}
+    scored_documents = []
+    for position, document in enumerate(documents):
+        text = " ".join(
+            str(document.metadata.get(field) or "")
+            for field in ("subject", "from", "date")
+        ) + " " + document.page_content
+        document_terms = set(re.findall(r"[a-z0-9]+", text.lower()))
+        overlap = len(query_terms & document_terms)
+        scored_documents.append((overlap, -position, document))
+    scored_documents.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [document for _, _, document in scored_documents[:limit]]
+
+
+def _format_context_document(document: Document) -> str:
+    """Format one retrieved document with stable source metadata.
+
+    Args:
+        document: Retrieved document with source metadata and body text.
+
+    Returns:
+        A labeled evidence block for the answer prompt.
+    """
+    metadata = document.metadata
+    return "\n".join(
+        [
+            f"[Source: {metadata.get('source', 'unknown')}]",
+            f"Subject: {metadata.get('subject') or 'Not available'}",
+            f"From: {metadata.get('from') or 'Not available'}",
+            f"Date: {metadata.get('date') or 'Not available'}",
+            f"Body: {document.page_content}",
+        ]
+    )
+
+
 def retrieve_documents(
     question: str,
     user_roles: Sequence[str] | None = None,
@@ -153,7 +222,24 @@ def retrieve_documents(
     user_id: str | None = None,
     audit_logger: AuditLogger | None = None,
 ) -> List[Document]:
-    """Retrieve relevant documents for the caller after ODRL validation and role filtering.
+    """Retrieve relevant documents after ODRL validation and role filtering.
+
+    Args:
+        question: Natural-language request used for retrieval.
+        user_roles: Caller roles used for policy validation and filtering.
+        purpose: Declared purpose of the request.
+        action: Declared action for the request.
+        correlation_id: Request identifier used for audit aggregation.
+        user_id: Caller identifier used for audit pseudonymization.
+        audit_logger: Optional logger for retrieval telemetry.
+
+    Returns:
+        Documents that match retrieval and role-filtering requirements.
+
+    Raises:
+        PolicyViolationError: If the request is not authorized.
+        ValueError: If required Cosmos or embedding configuration is missing.
+        Exception: If the vector query fails.
 
     Cosmos DB can reject complex nested-array predicates in some vector-query shapes,
     so we intentionally keep the query broad and apply the role enforcement in Python
@@ -234,6 +320,8 @@ def retrieve_documents(
             )
         )
 
+    documents = _rerank_documents(question, documents)
+
     if audit_logger is not None:
         audit_logger.emit(
             step_name="ContextRetrieval",
@@ -275,7 +363,14 @@ def retrieve_context(question: str, user_roles: Sequence[str] | None = None, pur
 
 
 def build_rag_graph(audit_logger: AuditLogger | None = None):
-    """Build the LangGraph pipeline used to retrieve and answer the query."""
+    """Build the LangGraph pipeline used to retrieve and answer a query.
+
+    Args:
+        audit_logger: Optional request-scoped logger shared by pipeline nodes.
+
+    Returns:
+        A compiled LangGraph workflow.
+    """
     settings = get_foundry_settings()
 
     llm = ChatOpenAI(
@@ -287,19 +382,32 @@ def build_rag_graph(audit_logger: AuditLogger | None = None):
 
     prompt = ChatPromptTemplate.from_template(
         """
-You are a helpful assistant analyzing the Enron email corpus. Use only the retrieved email context to answer the user's question.
+You are a careful evidence-grounded assistant analyzing the Enron email corpus.
+
+Use only facts directly supported by the retrieved context. For every factual
+claim, cite the supporting source ID in square brackets. Do not infer names,
+dates, causes, or relationships that are not stated in the context. If the
+context is insufficient, say so explicitly instead of guessing. Prefer a
+short, qualified answer over unsupported detail.
 
 Context:
 {context}
 
 Question: {question}
 
-Return a concise but complete answer and cite the relevant email metadata you used.
+Return a concise answer with the relevant supported findings and source IDs.
 """
     )
 
     def retrieve(state: RAGState) -> RAGState:
-        """Retrieve the policy-safe document set for the current question."""
+        """Retrieve the policy-safe document set for the current question.
+
+        Args:
+            state: Current RAG graph state containing the request details.
+
+        Returns:
+            The updated state with retrieved context and source identifiers.
+        """
         user_roles = state.get("user_roles", [])
         purpose = state.get("purpose") or "metadata_review"
         action = state.get("action") or "retrieve"
@@ -316,7 +424,7 @@ Return a concise but complete answer and cite the relevant email metadata you us
             user_id=user_id,
             audit_logger=request_audit_logger,
         )
-        state["context"] = [doc.page_content for doc in docs]
+        state["context"] = [_format_context_document(doc) for doc in docs]
         state["sources"] = [
             doc.metadata.get("source", "unknown")
             for doc in docs
@@ -324,14 +432,42 @@ Return a concise but complete answer and cite the relevant email metadata you us
         return state
 
     def answer(state: RAGState) -> RAGState:
-        """Generate the final answer and apply the spokesperson guardrail."""
-        start_time = perf_counter()
+        """Generate the final answer and apply the spokesperson guardrail.
+
+        Args:
+            state: Current RAG graph state containing retrieved context.
+
+        Returns:
+            The updated state containing the protected answer.
+        """
+        generation_start = perf_counter()
         chain = prompt | llm | StrOutputParser()
         answer = chain.invoke({
             "question": state["question"],
             "context": "\n\n".join(state["context"]),
         })
         request_audit_logger = audit_logger or AuditLogger()
+        request_audit_logger.emit(
+            step_name="BaseRAG",
+            execution_status="ALLOWED",
+            policy_metadata={
+                "roles": state.get("user_roles", []),
+                "purpose": state.get("purpose") or "metadata_review",
+                "action": state.get("action") or "retrieve",
+            },
+            telemetry={
+                "answerLength": len(answer),
+                "answerTokens": _estimate_tokens(answer),
+                "latencyMs": round((perf_counter() - generation_start) * 1000, 3),
+            },
+            correlation_id=state.get("correlation_id"),
+            user_id=state.get("user_id"),
+            prompt_text=state["question"],
+            response_text=answer,
+            reason="Base RAG answer generated from retrieved context.",
+            finalize=False,
+        )
+        validation_start = perf_counter()
         protected_answer = spokesperson_guardrail(
             state.get("context", []),
             answer,
@@ -349,8 +485,11 @@ Return a concise but complete answer and cite the relevant email metadata you us
             },
             telemetry={
                 "answerLength": len(answer),
+                "answerTokens": _estimate_tokens(protected_answer),
+                "inputAnswerTokens": _estimate_tokens(answer),
+                "outputAnswerTokens": _estimate_tokens(protected_answer),
                 "redacted": was_redacted,
-                "latencyMs": round((perf_counter() - start_time) * 1000, 3),
+                "latencyMs": round((perf_counter() - validation_start) * 1000, 3),
             },
             correlation_id=state.get("correlation_id"),
             user_id=state.get("user_id"),
@@ -360,6 +499,7 @@ Return a concise but complete answer and cite the relevant email metadata you us
             finalize=False,
         )
         state["answer"] = protected_answer
+        state["base_answer"] = answer
         return state
 
     graph = StateGraph(RAGState)

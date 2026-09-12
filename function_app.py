@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from time import perf_counter
 import uuid
 
@@ -12,6 +13,21 @@ from app.policy_guard import PolicyViolationError, evaluate_intent_against_odrl
 from app.rag_chain import build_rag_chain
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
+
+
+def _estimate_tokens(value: str) -> int:
+    """Estimate tokens using the evaluation harness's four-character heuristic.
+
+    Args:
+        value: Text whose approximate token count should be calculated.
+
+    Returns:
+        An estimated token count, or zero for empty text.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    return max(1, round(len(text) / 4.0))
 
 
 @app.route(route="rag", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
@@ -106,6 +122,7 @@ def rag_http(req: func.HttpRequest) -> func.HttpResponse:
             telemetry={
                 "documentMatchCount": len(result.get("sources", [])),
                 "responseLength": len(final_answer),
+                "responseTokens": _estimate_tokens(final_answer),
                 "latencyMs": round((perf_counter() - output_start) * 1000, 3),
             },
             correlation_id=correlation_id,
@@ -115,15 +132,22 @@ def rag_http(req: func.HttpRequest) -> func.HttpResponse:
             finalize=True,
         )
 
-        return func.HttpResponse(
-            json.dumps({
+        response_body = {
                 "question": question,
                 "answer": final_answer,
                 "sources": result.get("sources", []),
                 "userRoles": user_roles,
                 "purpose": purpose or "metadata_review",
                 "correlationId": correlation_id,
-            }),
+        }
+        if (
+            os.getenv("ENABLE_EVALUATION_DETAILS", "false").lower() == "true"
+            and payload.get("includeEvaluationDetails") is True
+        ):
+            response_body["evaluationDetails"] = {"baseAnswer": result.get("base_answer", "")}
+
+        return func.HttpResponse(
+            json.dumps(response_body),
             mimetype="application/json",
             status_code=200,
         )

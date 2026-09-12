@@ -11,6 +11,7 @@
     "COSMOSDB_KEY": "<your-cosmos-key>",
     "COSMOSDB_DATABASE": "<your-database>",
     "COSMOSDB_COLLECTION": "EnronEmailVectorStore",
-    "EMBEDDING_MODEL": "all-MiniLM-L6-v2"
+    "EMBEDDING_MODEL": "all-MiniLM-L6-v2",
+    "ENABLE_EVALUATION_DETAILS": "true"
   }
 }

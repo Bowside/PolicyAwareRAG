@@ -1,6 +1,8 @@
 # Performance Evaluations
 
-`run_evaluations.py` sends the defined evaluation cases to the live PolicyAwareRAG Function App and writes a JSON result file containing outcomes, latency, token estimates, audit-step metrics, and optional RAGAS scores.
+`run_evaluations.py` sends the defined evaluation cases to the live PolicyAwareRAG Function App and writes a JSON result file containing outcomes, latency, token estimates, resolved evaluation context, audit-step metrics, and optional RAGAS scores.
+
+The application retrieves up to 20 vector candidates, applies policy filtering, reranks them by query-term overlap, and sends at most 8 documents to generation. The answer prompt uses source-labeled evidence and requires citations for factual claims.
 
 ## Prerequisites
 
@@ -16,7 +18,12 @@ Create or update the root `.env` file with the evaluation target:
 ```env
 FUNCTION_APP_URL=https://<your-function-app>.azurewebsites.net/api/rag
 FUNCTION_APP_KEY=<your-function-app-key>
+
+# Set this on the Function App and evaluator for base-versus-final RAGAS scores.
+ENABLE_EVALUATION_DETAILS=true
 ```
+
+`ENABLE_EVALUATION_DETAILS` is optional and should be enabled only for controlled evaluation runs. When enabled, requests that explicitly include evaluation details return the pre-guardrail answer in addition to the final guarded answer. Normal API responses remain unchanged when it is disabled.
 
 To retrieve audit records and per-step metrics, also set:
 
@@ -26,6 +33,8 @@ COSMOSDB_KEY=<your-cosmos-key>
 COSMOSDB_DATABASE=policy_rag_db
 COSMOSDB_AUDIT_CONTAINER=AuditStorage
 ```
+
+The evaluator also uses `COSMOSDB_ENDPOINT`, `COSMOSDB_KEY`, `COSMOSDB_DATABASE`, and `COSMOSDB_COLLECTION` to resolve audited source IDs to document bodies. RAGAS is evaluated against those document bodies, not source IDs.
 
 The `.env` file is ignored by Git and must not be committed.
 
@@ -81,6 +90,38 @@ Each result includes human-review fields at the top level:
 - `request_payload`: the complete JSON request, including role, purpose, and action.
 - `response_text`: the raw response body returned by the Function App.
 - `response`: the parsed JSON response when the body is valid JSON.
+- `evaluation_contexts`: the retrieved document bodies used as RAGAS contexts when audit records are available.
+- `base_answer`: the pre-guardrail answer when evaluation details are enabled; otherwise it equals the final answer.
+- `reference`: an optional human-curated reference answer.
+- `step_metrics`: named timing and token metrics for `IntentValidation`, `ContextRetrieval`, `BaseRAG`, `SpokespersonValidation`, and `OutputRedaction`.
+
+Token fields are estimated with a four-characters-per-token heuristic. Answer tokens are split by processing stage in `step_metrics`; they are estimates, not provider billing counts.
 
 This makes it possible to review the original prompt beside the generated answer
 or error response without reconstructing the request from the metadata.
+
+## Human-curated references
+
+Reference-dependent RAGAS metrics (`context_precision` and `context_recall`) run only for questions with curated answers. Add exact question-to-answer mappings to:
+
+```text
+tests/performance_evaluation/reference_answers.json
+```
+
+Example:
+
+```json
+{
+	"Review the metadata for the customer account correspondence.": "A concise, human-reviewed answer grounded in the retrieved emails."
+}
+```
+
+Do not use model-generated answers as references. Reference answers should be reviewed against the source documents before being used in an academic evaluation.
+
+## Analysis notebook
+
+Open `evaluation_analysis.ipynb` after generating a results file. It reports pass rate, request and step latency, evaluation-stage token usage, and RAGAS scores. It exports PNG and SVG figures to:
+
+```text
+tests/performance_evaluation/figures/
+```
