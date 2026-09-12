@@ -32,11 +32,6 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install test dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
       - name: Run unit tests
         env:
           PYTHONPATH: ${{ github.workspace }}
@@ -120,6 +115,6 @@ jobs:
           app-name: 'ragnonprod-gateway-func'
           slot-name: 'Production'
           package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_1A55A5A0E6AE4E02BA9DCD9BEDBF1774 }}
+          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
           remote-build: true
         
