@@ -66,11 +66,6 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install --target="./.python_packages/lib/site-packages" -r requirements.txt
-
       - name: Zip artifact for deployment (respect .funcignore)
         run: |
           set -euo pipefail
@@ -126,4 +121,5 @@ jobs:
           slot-name: 'Production'
           package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_1A55A5A0E6AE4E02BA9DCD9BEDBF1774 }}
+          remote-build: true
         
