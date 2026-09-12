@@ -69,7 +69,6 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt --target=".python_packages/lib/site-packages"
 
       - name: Zip artifact for deployment (respect .funcignore)
         run: |
@@ -127,5 +126,5 @@ jobs:
           package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_1A55A5A0E6AE4E02BA9DCD9BEDBF1774 }}
           sku: 'flexconsumption'
-          scm-do-build-during-deployment: true
+          remote-build: true
         
