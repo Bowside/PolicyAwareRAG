@@ -35,7 +35,9 @@ jobs:
       - name: Run unit tests
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: pytest tests/unit_tests --junitxml=test-results.xml
+        run: |
+          pip install pytest
+          pytest tests/unit_tests --junitxml=test-results.xml
 
       - name: Upload unit test results
         if: ${{ always() }}
