@@ -1,3 +1,6 @@
+#############################
+# Function App dependencies #
+#############################
 # PyTorch CPU Index
 --extra-index-url https://download.pytorch.org/whl/cpu
 
@@ -7,7 +10,7 @@ torch --index-url https://download.pytorch.org/whl/cpu
 azure-functions==2.3.0
 #langchain==1.4.0
 langchain==0.3.19
-# langchain-community==0.4.2
+#langchain-community==0.4.2
 langchain-community==0.3.18
 #langchain-openai==1.6.0
 langchain-openai==0.3.7
@@ -22,5 +25,17 @@ python-dotenv==1.2.3
 #openai==3.8.0
 openai==1.65.5
 pytest==9.1.1
-pandas==3.0.5
-ragas==0.4.3
+
+##########################
+# Evaluation Depedencies #
+##########################
+# These are commented out as we do not need them in the deployed function app, but they are needed for local evaluation and testing.
+# requests==2.34.2
+# tqdm==4.70.1
+# matplotlib==3.11.2
+# datasets==5.0.1
+# typing-extensions
+# pandas==3.0.5
+# ragas==0.4.3
+
+
