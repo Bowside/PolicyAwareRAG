@@ -39,6 +39,7 @@ def test_get_foundry_settings_uses_environment_values(monkeypatch):
     monkeypatch.setenv("FOUNDRY_API_KEY", "test-key")
     monkeypatch.setenv("FOUNDRY_CHAT_MODEL", "gpt-4o-mini")
     monkeypatch.setenv("FOUNDRY_EMBEDDING_MODEL", "text-embedding-3-small")
+    monkeypatch.setenv("FOUNDRY_TEMPERATURE", "0.25")
 
     settings = get_foundry_settings()
 
@@ -46,6 +47,7 @@ def test_get_foundry_settings_uses_environment_values(monkeypatch):
     assert settings["api_key"] == "test-key"
     assert settings["chat_model"] == "gpt-4o-mini"
     assert settings["embedding_model"] == "text-embedding-3-small"
+    assert settings["temperature"] == 0.25
 
 
 def test_extract_step_metrics_preserves_named_audit_steps():
@@ -117,6 +119,7 @@ def test_get_foundry_settings_uses_defaults_when_missing(monkeypatch):
     monkeypatch.delenv("FOUNDRY_API_KEY", raising=False)
     monkeypatch.delenv("FOUNDRY_CHAT_MODEL", raising=False)
     monkeypatch.delenv("FOUNDRY_EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("FOUNDRY_TEMPERATURE", raising=False)
 
     settings = get_foundry_settings()
 
@@ -124,6 +127,7 @@ def test_get_foundry_settings_uses_defaults_when_missing(monkeypatch):
     assert settings["api_key"] is None
     assert settings["chat_model"] == "gpt-4o-mini"
     assert settings["embedding_model"] == "text-embedding-3-small"
+    assert settings["temperature"] == 0
 
 
 def test_get_cosmos_settings_uses_environment_values(monkeypatch):

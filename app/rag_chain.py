@@ -62,18 +62,19 @@ class RAGState(TypedDict):
     user_id: str
 
 
-def get_foundry_settings() -> Dict[str, str]:
+def get_foundry_settings() -> Dict[str, Any]:
     """Return the Microsoft Foundry configuration from environment variables.
 
     Returns:
         A dictionary containing the endpoint, API key, chat model, and embedding
-        model settings.
+        model and temperature settings.
     """
     return {
         "endpoint": os.getenv("FOUNDRY_ENDPOINT"),
         "api_key": os.getenv("FOUNDRY_API_KEY"),
         "chat_model": os.getenv("FOUNDRY_CHAT_MODEL", "gpt-4o-mini"),
         "embedding_model": os.getenv("FOUNDRY_EMBEDDING_MODEL", "text-embedding-3-small"),
+        "temperature": float(os.getenv("FOUNDRY_TEMPERATURE", "1.0")),
     }
 
 
@@ -377,7 +378,7 @@ def build_rag_graph(audit_logger: AuditLogger | None = None):
         model=settings["chat_model"],
         api_key=settings["api_key"],
         base_url=settings["endpoint"],
-        temperature=0,
+        temperature=settings["temperature"],
     )
 
     prompt = ChatPromptTemplate.from_template(

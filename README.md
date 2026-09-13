@@ -54,6 +54,7 @@ A Python Azure Functions app for Enron email retrieval using LangChain, LangGrap
 - `FOUNDRY_ENDPOINT` (for example: `https://<resource>.services.ai.azure.com/models` or the compatible OpenAI-style Foundry endpoint for your project)
 - `FOUNDRY_CHAT_MODEL` (set to `gpt-4o-mini`)
 - `FOUNDRY_EMBEDDING_MODEL` (for example: `text-embedding-3-small`)
+- `FOUNDRY_TEMPERATURE` (for example: `0`)
 - `COSMOSDB_ENDPOINT`
 - `COSMOSDB_KEY`
 - `COSMOSDB_DATABASE`
