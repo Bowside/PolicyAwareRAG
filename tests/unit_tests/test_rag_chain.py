@@ -24,6 +24,7 @@ from app.rag_chain import (
     retrieve_documents,
 )
 from tests.performance_evaluation.run_evaluations import (
+    build_cases,
     extract_step_metrics,
     get_evaluation_context,
     load_reference_answers,
@@ -64,7 +65,12 @@ def test_extract_step_metrics_preserves_named_audit_steps():
                 {
                     "step_name": "SpokespersonValidation",
                     "execution_status": "ALLOWED",
-                    "telemetry": {"elapsedMs": 4.25},
+                    "telemetry": {
+                        "elapsedMs": 4.25,
+                        "inputAnswerTokens": 12,
+                        "outputAnswerTokens": 10,
+                        "spokespersonTokens": 22,
+                    },
                 },
             ],
         },
@@ -76,6 +82,15 @@ def test_extract_step_metrics_preserves_named_audit_steps():
         "SpokespersonValidation",
     ]
     assert [step["latency_ms"] for step in metrics] == [12.5, 4.25]
+    assert metrics[1]["spokesperson_tokens"] == 22
+
+
+def test_observer_evaluations_accept_redacted_answers():
+    """Ensure observer name removal is a valid successful outcome."""
+    observer_cases = [case for case in build_cases() if "observer" in case["case_type"]]
+
+    assert observer_cases
+    assert all(case["acceptable_outcomes"] == ["allow", "allow_redacted"] for case in observer_cases)
 
 
 def test_load_reference_answers_reads_curated_question_mapping(tmp_path):
@@ -200,6 +215,7 @@ def test_build_rag_chain_instantiates_graph_components(
     mock_prompt_template.assert_called_once()
     prompt_text = mock_prompt_template.call_args.args[0]
     assert "Use only facts directly supported" in prompt_text
+    assert "no personal" not in prompt_text
     assert "context is insufficient" in prompt_text.replace("\n", " ")
     assert "cite the supporting source ID" in prompt_text
     mock_graph.add_node.assert_called()

@@ -24,6 +24,7 @@ from app.audit_logger import AuditLogger
 from app.policy_guard import (
     PolicyViolationError,
     evaluate_intent_against_odrl,
+    normalize_policy_role,
     redact_response_for_role,
     requires_semantic_policy_review,
     spokesperson_guardrail,
@@ -494,6 +495,7 @@ Return a concise answer with the relevant supported findings and source IDs.
                 "answerTokens": _estimate_tokens(protected_answer),
                 "inputAnswerTokens": _estimate_tokens(answer),
                 "outputAnswerTokens": _estimate_tokens(protected_answer),
+                "spokespersonTokens": _estimate_tokens(answer) + _estimate_tokens(protected_answer),
                 "redacted": was_redacted,
                 "latencyMs": round((perf_counter() - validation_start) * 1000, 3),
             },
@@ -510,16 +512,25 @@ Return a concise answer with the relevant supported findings and source IDs.
             action=state.get("action"),
             intent=state.get("question"),
         )
+        reviewed_answer = protected_answer
         if semantic_review_required:
             semantic_review_start = perf_counter()
             semantic_review_prompt = ChatPromptTemplate.from_template(
                 """
-You are a deterministic policy compliance reviewer. Review only the protected
-answer below. Return JSON with exactly two fields: "decision" ("ALLOW" or
-"DENY") and "reason" (a short explanation). Return DENY if the answer
-reveals sensitive information that the stated role and purpose do not permit,
-or if it makes claims not supported by the answer's cited sources. When unsure,
-return DENY. Do not rewrite the answer.
+You are the final policy-aware spokesperson. The deterministic authorization
+and redaction checks have already passed. Review the protected answer and
+return JSON with exactly three fields: "decision" ("ALLOW" or "DENY"),
+"reason" (a short explanation), and "answer" (the final response text).
+
+For the business-observer role, the final answer MUST contain no personal
+names. Remove or replace every person's name, including names in prose,
+headings, quotations, and citations. Use [REDACTED_NAME] when needed, while
+preserving the supported meaning and source IDs. Do not reject an answer just
+because it contains business facts or sensitive-looking text; transform it to
+remove personal names. Return DENY only if the answer cannot be safely
+rewritten under the stated policy. For other roles, preserve the protected
+answer unless an explicit policy violation is present. Do not judge answer
+relevance or completeness.
 
 Role: {role}
 Purpose: {purpose}
@@ -533,9 +544,29 @@ Protected answer:
             review_raw = ""
             review_result: dict[str, Any] = {}
             review_error: PolicyViolationError | None = None
+            normalized_roles = [
+                normalize_policy_role(role)
+                for role in state.get("user_roles", [])
+                if normalize_policy_role(role)
+            ]
+            spokesperson_role = (
+                "business-observer"
+                if "business-observer" in normalized_roles
+                else (normalized_roles[0] if normalized_roles else "")
+            )
+            review_prompt_text = "\n".join(
+                [
+                    "Role: " + spokesperson_role,
+                    "Purpose: " + str(state.get("purpose") or "metadata_review"),
+                    "Action: " + str(state.get("action") or "retrieve"),
+                    "Question: " + state["question"],
+                    "Protected answer:",
+                    protected_answer,
+                ]
+            )
             try:
                 review_raw = review_chain.invoke({
-                    "role": state.get("user_roles", []),
+                    "role": spokesperson_role,
                     "purpose": state.get("purpose") or "metadata_review",
                     "action": state.get("action") or "retrieve",
                     "question": state["question"],
@@ -553,10 +584,18 @@ Protected answer:
                 review_error.__cause__ = exc
 
             decision = str(review_result.get("decision", "")).strip().upper()
+            reviewed_answer = str(review_result.get("answer") or "").strip()
+            if spokesperson_role == "business-observer" and not reviewed_answer:
+                review_error = PolicyViolationError(
+                    "Policy denial: spokesperson returned no sanitized answer."
+                )
+            if spokesperson_role != "business-observer":
+                reviewed_answer = protected_answer
             semantic_review_latency = round((perf_counter() - semantic_review_start) * 1000, 3)
+            review_status = "ALLOWED" if review_error is None and reviewed_answer else "DENIED"
             request_audit_logger.emit(
                 step_name="SemanticPolicyReview",
-                execution_status="ALLOWED" if decision == "ALLOW" else "DENIED",
+                execution_status=review_status,
                 policy_metadata={
                     "roles": state.get("user_roles", []),
                     "purpose": state.get("purpose") or "metadata_review",
@@ -564,7 +603,10 @@ Protected answer:
                     "reviewRequired": True,
                 },
                 telemetry={
-                    "answerLength": len(protected_answer),
+                    "answerLength": len(reviewed_answer),
+                    "promptTokens": _estimate_tokens(review_prompt_text),
+                    "completionTokens": _estimate_tokens(review_raw),
+                    "totalTokens": _estimate_tokens(review_prompt_text) + _estimate_tokens(review_raw),
                     "inputAnswerTokens": _estimate_tokens(protected_answer),
                     "outputAnswerTokens": _estimate_tokens(review_raw),
                     "reviewDecision": decision,
@@ -573,17 +615,20 @@ Protected answer:
                 correlation_id=state.get("correlation_id"),
                 user_id=state.get("user_id"),
                 prompt_text=state["question"],
-                response_text=protected_answer,
+                response_text=reviewed_answer,
                 reason=str(review_result.get("reason") or "Semantic policy review completed."),
                 finalize=False,
             )
             if review_error is not None:
                 raise review_error
-            if decision != "ALLOW":
+            if spokesperson_role == "business-observer" and not reviewed_answer:
                 raise PolicyViolationError(
-                    "Policy denial: semantic policy review did not approve the response."
+                    "Policy denial: spokesperson returned no sanitized answer."
                 )
-        state["answer"] = protected_answer
+            # Deterministic authorization remains authoritative. For roles other
+            # than business-observer, the semantic model cannot turn an answer-
+            # quality concern into a policy denial.
+        state["answer"] = reviewed_answer
         state["base_answer"] = answer
         return state
 

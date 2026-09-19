@@ -213,6 +213,23 @@ def extract_step_metrics(audit_record: Dict[str, Any], user_query: str) -> List[
             ),
             "input_answer_tokens": float(telemetry.get("inputAnswerTokens") or 0),
             "output_answer_tokens": float(telemetry.get("outputAnswerTokens") or 0),
+            "prompt_tokens": float(telemetry.get("promptTokens") or 0),
+            "completion_tokens": float(telemetry.get("completionTokens") or 0),
+            "total_tokens": float(
+                telemetry.get("totalTokens")
+                or telemetry.get("spokespersonTokens")
+                or 0
+            ),
+            "spokesperson_tokens": float(
+                telemetry.get("spokespersonTokens")
+                or (
+                    telemetry.get("inputAnswerTokens") or 0
+                ) + (
+                    telemetry.get("outputAnswerTokens") or 0
+                )
+                if step_name.strip() == "SpokespersonValidation"
+                else 0
+            ),
             "document_count": telemetry.get("documentMatchCount"),
             "reason": step.get("reason"),
         }
@@ -321,7 +338,11 @@ def build_cases() -> List[Dict[str, Any]]:
     ]
     for case_type, roles, purpose, action, question_template in allowed_case_types:
         for index, subject in enumerate(_CASE_VARIANTS):
-            acceptable = ["allow", "allow_redacted"] if "privacy" in case_type else None
+            acceptable = (
+                ["allow", "allow_redacted"]
+                if "privacy" in case_type or "observer" in case_type
+                else None
+            )
             cases.append(
                 _make_case(
                     case_type,
@@ -517,7 +538,7 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
         "step_metrics": step_metrics,
         "response": response_json,
         "base_answer": base_answer,
-        "reference": reference_answer,
+        "reference_answer": reference_answer,
         "evaluation_contexts": evaluation_contexts,
         "correlationId": correlation_id,
         "passed": actual_outcome in case.get(
