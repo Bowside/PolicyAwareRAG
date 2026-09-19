@@ -12,6 +12,7 @@ from app.policy_guard import (
     evaluate_intent_against_odrl,
     load_odrl_policies,
     redact_response_for_role,
+    requires_semantic_policy_review,
 )
 from app.rag_chain import (
     _rerank_documents,
@@ -259,6 +260,20 @@ def test_evaluate_intent_allows_privacy_analyst_for_compliance_review():
         purpose="compliance_review",
         action="summarise",
     ) is True
+
+
+def test_semantic_review_is_required_for_purpose_gated_policy():
+    """Ensure restricted purpose-gated policies trigger secondary review."""
+    assert requires_semantic_policy_review(
+        ["privacy-compliance-analyst"],
+        purpose="compliance_review",
+        action="summarise",
+    ) is True
+    assert requires_semantic_policy_review(
+        ["pii-data-governance-admin"],
+        purpose="compliance_review",
+        action="retrieve",
+    ) is False
 
 
 def test_audit_logger_emits_privacy_safe_schema():
