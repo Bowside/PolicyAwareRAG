@@ -93,9 +93,9 @@ Each result includes human-review fields at the top level:
 - `evaluation_contexts`: the retrieved document bodies used as RAGAS contexts when audit records are available.
 - `base_answer`: the pre-guardrail answer when evaluation details are enabled; otherwise it equals the final answer.
 - `reference`: an optional human-curated reference answer.
-- `step_metrics`: named timing and token metrics for `IntentValidation`, `ContextRetrieval`, `BaseRAG`, `SpokespersonValidation`, and `OutputRedaction`.
+- `step_metrics`: named timing and token metrics for `IntentValidation`, `ContextRetrieval`, `BaseRAG`, `SpokespersonValidation`, `SemanticPolicyReview` (when a purpose-gated policy applies), and `OutputRedaction`.
 
-Token fields are estimated with a four-characters-per-token heuristic. Answer tokens are split by processing stage in `step_metrics`; they are estimates, not provider billing counts.
+Token fields are estimated with a four-characters-per-token heuristic. Answer tokens are split by processing stage in `step_metrics`; `spokesperson_tokens` estimates the deterministic spokesperson input and output text, while `prompt_tokens`, `completion_tokens`, and `total_tokens` estimate the secondary semantic-review LLM call. These are estimates, not provider billing counts.
 
 This makes it possible to review the original prompt beside the generated answer
 or error response without reconstructing the request from the metadata.

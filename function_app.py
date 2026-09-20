@@ -153,8 +153,13 @@ def rag_http(req: func.HttpRequest) -> func.HttpResponse:
         )
     except PolicyViolationError as exc:
         logging.warning("Policy denial triggered: %s", exc)
+        denial_step = (
+            "SemanticPolicyReview"
+            if "spokesperson" in str(exc).lower() or "semantic policy review" in str(exc).lower()
+            else "IntentValidation"
+        )
         audit_logger.emit(
-            step_name="IntentValidation",
+            step_name=denial_step,
             execution_status="DENIED",
             policy_metadata={
                 "requestType": "rag",

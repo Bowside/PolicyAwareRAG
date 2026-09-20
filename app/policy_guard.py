@@ -277,6 +277,35 @@ def evaluate_intent_against_odrl(
     )
 
 
+def requires_semantic_policy_review(
+    user_roles: Sequence[str] | None,
+    purpose: str | None = None,
+    action: str | None = None,
+    intent: str | None = None,
+) -> bool:
+    """Return whether the authorized policy is purpose-gated and needs review.
+
+    Unconstrained permissions, such as the full-access administrative policy, are
+    treated as open for this secondary review decision. The caller must perform
+    deterministic authorization before using this helper.
+    """
+    normalized_action = normalize_policy_action(action or infer_action_from_intent(intent or ""))
+    normalized_purpose = normalize_policy_purpose(purpose or infer_purpose_from_intent(intent or ""))
+
+    for role in user_roles or []:
+        for permission in _policy_permissions_for_role(role):
+            permitted_actions = [normalize_policy_action(item) for item in permission.get("action", [])]
+            if normalized_action not in permitted_actions:
+                continue
+            constraint = permission.get("constraint")
+            if not constraint or constraint.get("leftOperand") != "purpose":
+                continue
+            rule_purpose = normalize_policy_purpose(constraint.get("rightOperand"))
+            if not normalized_purpose or not rule_purpose or rule_purpose == normalized_purpose:
+                return True
+    return False
+
+
 def _contains_sensitive_data(value: str) -> bool:
     """Check whether a generated response includes common sensitive data patterns.
 

@@ -12,6 +12,7 @@ from app.policy_guard import (
     evaluate_intent_against_odrl,
     load_odrl_policies,
     redact_response_for_role,
+    requires_semantic_policy_review,
 )
 from app.rag_chain import (
     _rerank_documents,
@@ -23,6 +24,7 @@ from app.rag_chain import (
     retrieve_documents,
 )
 from tests.performance_evaluation.run_evaluations import (
+    build_cases,
     extract_step_metrics,
     get_evaluation_context,
     load_reference_answers,
@@ -39,6 +41,7 @@ def test_get_foundry_settings_uses_environment_values(monkeypatch):
     monkeypatch.setenv("FOUNDRY_API_KEY", "test-key")
     monkeypatch.setenv("FOUNDRY_CHAT_MODEL", "gpt-4o-mini")
     monkeypatch.setenv("FOUNDRY_EMBEDDING_MODEL", "text-embedding-3-small")
+    monkeypatch.setenv("FOUNDRY_TEMPERATURE", "0.25")
 
     settings = get_foundry_settings()
 
@@ -46,6 +49,7 @@ def test_get_foundry_settings_uses_environment_values(monkeypatch):
     assert settings["api_key"] == "test-key"
     assert settings["chat_model"] == "gpt-4o-mini"
     assert settings["embedding_model"] == "text-embedding-3-small"
+    assert settings["temperature"] == 0.25
 
 
 def test_extract_step_metrics_preserves_named_audit_steps():
@@ -61,7 +65,12 @@ def test_extract_step_metrics_preserves_named_audit_steps():
                 {
                     "step_name": "SpokespersonValidation",
                     "execution_status": "ALLOWED",
-                    "telemetry": {"elapsedMs": 4.25},
+                    "telemetry": {
+                        "elapsedMs": 4.25,
+                        "inputAnswerTokens": 12,
+                        "outputAnswerTokens": 10,
+                        "spokespersonTokens": 22,
+                    },
                 },
             ],
         },
@@ -73,6 +82,15 @@ def test_extract_step_metrics_preserves_named_audit_steps():
         "SpokespersonValidation",
     ]
     assert [step["latency_ms"] for step in metrics] == [12.5, 4.25]
+    assert metrics[1]["spokesperson_tokens"] == 22
+
+
+def test_observer_evaluations_accept_redacted_answers():
+    """Ensure observer name removal is a valid successful outcome."""
+    observer_cases = [case for case in build_cases() if "observer" in case["case_type"]]
+
+    assert observer_cases
+    assert all(case["acceptable_outcomes"] == ["allow", "allow_redacted"] for case in observer_cases)
 
 
 def test_load_reference_answers_reads_curated_question_mapping(tmp_path):
@@ -117,6 +135,7 @@ def test_get_foundry_settings_uses_defaults_when_missing(monkeypatch):
     monkeypatch.delenv("FOUNDRY_API_KEY", raising=False)
     monkeypatch.delenv("FOUNDRY_CHAT_MODEL", raising=False)
     monkeypatch.delenv("FOUNDRY_EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("FOUNDRY_TEMPERATURE", raising=False)
 
     settings = get_foundry_settings()
 
@@ -124,6 +143,7 @@ def test_get_foundry_settings_uses_defaults_when_missing(monkeypatch):
     assert settings["api_key"] is None
     assert settings["chat_model"] == "gpt-4o-mini"
     assert settings["embedding_model"] == "text-embedding-3-small"
+    assert settings["temperature"] == 0
 
 
 def test_get_cosmos_settings_uses_environment_values(monkeypatch):
@@ -195,6 +215,7 @@ def test_build_rag_chain_instantiates_graph_components(
     mock_prompt_template.assert_called_once()
     prompt_text = mock_prompt_template.call_args.args[0]
     assert "Use only facts directly supported" in prompt_text
+    assert "no personal" not in prompt_text
     assert "context is insufficient" in prompt_text.replace("\n", " ")
     assert "cite the supporting source ID" in prompt_text
     mock_graph.add_node.assert_called()
@@ -255,6 +276,20 @@ def test_evaluate_intent_allows_privacy_analyst_for_compliance_review():
         purpose="compliance_review",
         action="summarise",
     ) is True
+
+
+def test_semantic_review_is_required_for_purpose_gated_policy():
+    """Ensure restricted purpose-gated policies trigger secondary review."""
+    assert requires_semantic_policy_review(
+        ["privacy-compliance-analyst"],
+        purpose="compliance_review",
+        action="summarise",
+    ) is True
+    assert requires_semantic_policy_review(
+        ["pii-data-governance-admin"],
+        purpose="compliance_review",
+        action="retrieve",
+    ) is False
 
 
 def test_audit_logger_emits_privacy_safe_schema():

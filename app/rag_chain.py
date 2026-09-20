@@ -4,6 +4,7 @@ The module embeds queries, retrieves policy-filtered documents from Cosmos DB,
 generates an answer with Microsoft Foundry, and records pipeline telemetry.
 """
 
+import json
 import os
 import re
 from time import perf_counter
@@ -23,7 +24,9 @@ from app.audit_logger import AuditLogger
 from app.policy_guard import (
     PolicyViolationError,
     evaluate_intent_against_odrl,
+    normalize_policy_role,
     redact_response_for_role,
+    requires_semantic_policy_review,
     spokesperson_guardrail,
 )
 
@@ -62,18 +65,19 @@ class RAGState(TypedDict):
     user_id: str
 
 
-def get_foundry_settings() -> Dict[str, str]:
+def get_foundry_settings() -> Dict[str, Any]:
     """Return the Microsoft Foundry configuration from environment variables.
 
     Returns:
         A dictionary containing the endpoint, API key, chat model, and embedding
-        model settings.
+        model and temperature settings.
     """
     return {
         "endpoint": os.getenv("FOUNDRY_ENDPOINT"),
         "api_key": os.getenv("FOUNDRY_API_KEY"),
         "chat_model": os.getenv("FOUNDRY_CHAT_MODEL", "gpt-4o-mini"),
         "embedding_model": os.getenv("FOUNDRY_EMBEDDING_MODEL", "text-embedding-3-small"),
+        "temperature": float(os.getenv("FOUNDRY_TEMPERATURE", "1.0")),
     }
 
 
@@ -167,7 +171,7 @@ def _normalize_roles(user_roles: Sequence[str] | None) -> List[str]:
     return normalized
 
 
-def _rerank_documents(question: str, documents: List[Document], limit: int = 8) -> List[Document]:
+def _rerank_documents(question: str, documents: List[Document], limit: int = 10) -> List[Document]:
     """Rerank vector results with lightweight query-term overlap.
 
     Args:
@@ -254,7 +258,7 @@ def retrieve_documents(
     allowed_roles = _normalize_roles(user_roles) or []
 
     query = """
-        SELECT TOP 20
+        SELECT TOP 25
             c.id,
             c.subject,
             c["from"],
@@ -377,7 +381,7 @@ def build_rag_graph(audit_logger: AuditLogger | None = None):
         model=settings["chat_model"],
         api_key=settings["api_key"],
         base_url=settings["endpoint"],
-        temperature=0,
+        temperature=settings["temperature"],
     )
 
     prompt = ChatPromptTemplate.from_template(
@@ -386,8 +390,11 @@ You are a careful evidence-grounded assistant analyzing the Enron email corpus.
 
 Use only facts directly supported by the retrieved context. For every factual
 claim, cite the supporting source ID in square brackets. Do not infer names,
-dates, causes, or relationships that are not stated in the context. If the
-context is insufficient, say so explicitly instead of guessing. Prefer a
+dates, causes, or relationships that are not stated in the context. If the provided 
+context does not contain enough information to answer the question, respond with 
+exactly: 'Insufficient information in the provided context.'. Treat email headers
+(From, To, Date, Subject) as factual context. Do not assume nicknames, aliases,
+or full names unless explicitly mapped in the text. Prefer a
 short, qualified answer over unsupported detail.
 
 Context:
@@ -488,6 +495,7 @@ Return a concise answer with the relevant supported findings and source IDs.
                 "answerTokens": _estimate_tokens(protected_answer),
                 "inputAnswerTokens": _estimate_tokens(answer),
                 "outputAnswerTokens": _estimate_tokens(protected_answer),
+                "spokespersonTokens": _estimate_tokens(answer) + _estimate_tokens(protected_answer),
                 "redacted": was_redacted,
                 "latencyMs": round((perf_counter() - validation_start) * 1000, 3),
             },
@@ -498,7 +506,129 @@ Return a concise answer with the relevant supported findings and source IDs.
             reason="Policy-aware spokesperson guardrail evaluated the generated answer.",
             finalize=False,
         )
-        state["answer"] = protected_answer
+        semantic_review_required = requires_semantic_policy_review(
+            state.get("user_roles", []),
+            purpose=state.get("purpose"),
+            action=state.get("action"),
+            intent=state.get("question"),
+        )
+        reviewed_answer = protected_answer
+        if semantic_review_required:
+            semantic_review_start = perf_counter()
+            semantic_review_prompt = ChatPromptTemplate.from_template(
+                """
+You are the final policy-aware spokesperson. The deterministic authorization
+and redaction checks have already passed. Review the protected answer and
+return JSON with exactly three fields: "decision" ("ALLOW" or "DENY"),
+"reason" (a short explanation), and "answer" (the final response text).
+
+For the business-observer role, the final answer MUST contain no personal
+names. Remove or replace every person's name, including names in prose,
+headings, quotations, and citations. Use [REDACTED_NAME] when needed, while
+preserving the supported meaning and source IDs. Do not reject an answer just
+because it contains business facts or sensitive-looking text; transform it to
+remove personal names. Return DENY only if the answer cannot be safely
+rewritten under the stated policy. For other roles, preserve the protected
+answer unless an explicit policy violation is present. Do not judge answer
+relevance or completeness.
+
+Role: {role}
+Purpose: {purpose}
+Action: {action}
+Question: {question}
+Protected answer:
+{answer}
+"""
+            )
+            review_chain = semantic_review_prompt | llm | StrOutputParser()
+            review_raw = ""
+            review_result: dict[str, Any] = {}
+            review_error: PolicyViolationError | None = None
+            normalized_roles = [
+                normalize_policy_role(role)
+                for role in state.get("user_roles", [])
+                if normalize_policy_role(role)
+            ]
+            spokesperson_role = (
+                "business-observer"
+                if "business-observer" in normalized_roles
+                else (normalized_roles[0] if normalized_roles else "")
+            )
+            review_prompt_text = "\n".join(
+                [
+                    "Role: " + spokesperson_role,
+                    "Purpose: " + str(state.get("purpose") or "metadata_review"),
+                    "Action: " + str(state.get("action") or "retrieve"),
+                    "Question: " + state["question"],
+                    "Protected answer:",
+                    protected_answer,
+                ]
+            )
+            try:
+                review_raw = review_chain.invoke({
+                    "role": spokesperson_role,
+                    "purpose": state.get("purpose") or "metadata_review",
+                    "action": state.get("action") or "retrieve",
+                    "question": state["question"],
+                    "answer": protected_answer,
+                })
+                parsed_review = json.loads(review_raw)
+                if not isinstance(parsed_review, dict):
+                    raise TypeError("semantic review output was not an object")
+                review_result = parsed_review
+            except (TypeError, json.JSONDecodeError) as exc:
+                review_error = PolicyViolationError("Policy denial: semantic policy review returned invalid output.")
+                review_error.__cause__ = exc
+            except Exception as exc:
+                review_error = PolicyViolationError("Policy denial: semantic policy review failed.")
+                review_error.__cause__ = exc
+
+            decision = str(review_result.get("decision", "")).strip().upper()
+            reviewed_answer = str(review_result.get("answer") or "").strip()
+            if spokesperson_role == "business-observer" and not reviewed_answer:
+                review_error = PolicyViolationError(
+                    "Policy denial: spokesperson returned no sanitized answer."
+                )
+            if spokesperson_role != "business-observer":
+                reviewed_answer = protected_answer
+            semantic_review_latency = round((perf_counter() - semantic_review_start) * 1000, 3)
+            review_status = "ALLOWED" if review_error is None and reviewed_answer else "DENIED"
+            request_audit_logger.emit(
+                step_name="SemanticPolicyReview",
+                execution_status=review_status,
+                policy_metadata={
+                    "roles": state.get("user_roles", []),
+                    "purpose": state.get("purpose") or "metadata_review",
+                    "action": state.get("action") or "retrieve",
+                    "reviewRequired": True,
+                },
+                telemetry={
+                    "answerLength": len(reviewed_answer),
+                    "promptTokens": _estimate_tokens(review_prompt_text),
+                    "completionTokens": _estimate_tokens(review_raw),
+                    "totalTokens": _estimate_tokens(review_prompt_text) + _estimate_tokens(review_raw),
+                    "inputAnswerTokens": _estimate_tokens(protected_answer),
+                    "outputAnswerTokens": _estimate_tokens(review_raw),
+                    "reviewDecision": decision,
+                    "latencyMs": semantic_review_latency,
+                },
+                correlation_id=state.get("correlation_id"),
+                user_id=state.get("user_id"),
+                prompt_text=state["question"],
+                response_text=reviewed_answer,
+                reason=str(review_result.get("reason") or "Semantic policy review completed."),
+                finalize=False,
+            )
+            if review_error is not None:
+                raise review_error
+            if spokesperson_role == "business-observer" and not reviewed_answer:
+                raise PolicyViolationError(
+                    "Policy denial: spokesperson returned no sanitized answer."
+                )
+            # Deterministic authorization remains authoritative. For roles other
+            # than business-observer, the semantic model cannot turn an answer-
+            # quality concern into a policy denial.
+        state["answer"] = reviewed_answer
         state["base_answer"] = answer
         return state
 

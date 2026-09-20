@@ -14,6 +14,10 @@
         "leftOperand": "purpose",
         "operator": "eq",
         "rightOperand": "metadata_review"
+      },
+      "outputConstraint": {
+        "type": "no_person_names",
+        "enforcement": "llm_spokesperson"
       }
     },
     {
@@ -26,6 +30,10 @@
         "leftOperand": "purpose",
         "operator": "eq",
         "rightOperand": "routing"
+      },
+      "outputConstraint": {
+        "type": "no_person_names",
+        "enforcement": "llm_spokesperson"
       }
     },
     {
@@ -38,6 +46,10 @@
         "leftOperand": "purpose",
         "operator": "eq",
         "rightOperand": "triage"
+      },
+      "outputConstraint": {
+        "type": "no_person_names",
+        "enforcement": "llm_spokesperson"
       }
     }
   ],
