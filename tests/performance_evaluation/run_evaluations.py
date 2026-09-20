@@ -3,9 +3,8 @@
 This script targets the live HTTP route exposed by the Azure Function app:
     POST /api/rag
 
-It calls the current request contract, records end-to-end latency, pulls the
-per-step timing and token estimates from the single request-level audit record,
-and optionally computes RAGAS metrics when the framework is installed.
+It calls the current request contract, records end-to-end latency, and pulls the
+per-step timing and token estimates from the single request-level audit record.
 """
 
 from __future__ import annotations
@@ -22,18 +21,6 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import requests
 from dotenv import load_dotenv
-
-try:
-    from datasets import Dataset
-    from ragas import evaluate
-    from ragas.metrics.collections import answer_relevancy, context_precision, context_recall, faithfulness
-except Exception:  # pragma: no cover - optional dependency fallback
-    Dataset = None
-    evaluate = None
-    answer_relevancy = None
-    context_precision = None
-    context_recall = None
-    faithfulness = None
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 FUNCTION_APP_URL = os.getenv("FUNCTION_APP_URL", "http://localhost:7071/api/rag")
@@ -230,6 +217,9 @@ def extract_step_metrics(audit_record: Dict[str, Any], user_query: str) -> List[
                 if step_name.strip() == "SpokespersonValidation"
                 else 0
             ),
+            "review_decision": telemetry.get("reviewDecision"),
+            "review_required": bool(telemetry.get("reviewRequired", step_name.strip() == "SemanticPolicyReview")),
+            "redacted": bool(telemetry.get("redacted", False)),
             "document_count": telemetry.get("documentMatchCount"),
             "reason": step.get("reason"),
         }
@@ -473,49 +463,6 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
     evaluation_contexts = get_evaluation_context(audit_record)
     actual_outcome = normalize_outcome(response_json, response.status_code)
 
-    ragas_result = None
-    if evaluate is not None and Dataset is not None and answer.strip():
-        try:
-            dataset = Dataset.from_dict({
-                "question": [user_query],
-                "answer": [answer],
-                "contexts": [evaluation_contexts],
-            })
-            if reference_answer:
-                dataset = Dataset.from_dict({
-                    "question": [user_query],
-                    "answer": [answer],
-                    "contexts": [evaluation_contexts],
-                    "reference": [reference_answer],
-                })
-            metrics = [answer_relevancy, faithfulness]
-            if reference_answer:
-                metrics.extend([context_precision, context_recall])
-            score_data = evaluate(dataset, metrics=metrics)
-            final_scores = score_data.scores[0]
-            ragas_result = {
-                f"final_{key}": float(value)
-                for key, value in final_scores.items()
-                if isinstance(value, (int, float))
-            }
-            if base_answer != answer:
-                base_dataset = Dataset.from_dict({
-                    "question": [user_query],
-                    "answer": [base_answer],
-                    "contexts": [evaluation_contexts],
-                })
-                base_score_data = evaluate(
-                    base_dataset,
-                    metrics=[answer_relevancy, faithfulness],
-                )
-                ragas_result.update({
-                    f"base_{key}": float(value)
-                    for key, value in base_score_data.scores[0].items()
-                    if isinstance(value, (int, float))
-                })
-        except Exception:
-            ragas_result = None
-
     return {
         "case_type": case["case_type"],
         "original_prompt": user_query,
@@ -545,7 +492,6 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
             "acceptable_outcomes",
             [case.get("expected_outcome")],
         ),
-        "ragas": ragas_result,
         "timestamp": utc_now(),
     }
 
