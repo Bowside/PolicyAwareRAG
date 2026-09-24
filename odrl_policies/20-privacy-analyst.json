@@ -51,6 +51,42 @@
         "operator": "eq",
         "rightOperand": "privacy_review"
       }
+    },
+    {
+      "uid": "urn:policyaware:permission:privacy-compliance-analyst:data-retention",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["summarise", "summarize", "retrieve", "audit", "redact"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:privacy-compliance-analyst",
+      "constraint": {
+        "leftOperand": "purpose",
+        "operator": "eq",
+        "rightOperand": "data_retention"
+      }
+    },
+    {
+      "uid": "urn:policyaware:permission:privacy-compliance-analyst:insider-trading",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["summarise", "summarize", "retrieve", "audit", "redact"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:privacy-compliance-analyst",
+      "constraint": {
+        "leftOperand": "purpose",
+        "operator": "eq",
+        "rightOperand": "insider_trading"
+      }
+    },
+    {
+      "uid": "urn:policyaware:permission:privacy-compliance-analyst:whistleblower-protection",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["summarise", "summarize", "retrieve", "audit", "redact"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:privacy-compliance-analyst",
+      "constraint": {
+        "leftOperand": "purpose",
+        "operator": "eq",
+        "rightOperand": "whistleblower_protection"
+      }
     }
   ],
   "prohibition": [

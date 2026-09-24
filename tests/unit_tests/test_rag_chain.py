@@ -28,6 +28,7 @@ from tests.performance_evaluation.run_evaluations import (
     extract_step_metrics,
     get_evaluation_context,
     load_reference_answers,
+    resolve_reference_answer,
 )
 
 
@@ -99,6 +100,17 @@ def test_load_reference_answers_reads_curated_question_mapping(tmp_path):
     reference_path.write_text('{"Question?": "Reference answer."}', encoding="utf-8")
 
     assert load_reference_answers(reference_path) == {"Question?": "Reference answer."}
+
+
+def test_resolve_reference_answer_uses_case_type_when_question_variant_differs():
+    """Ensure the evaluator resolves a reference answer from the case type when subject text changes."""
+    reference_answers = {
+        "Review the transmission metadata and sender domains for communications regarding Project Raptor and LJM partnerships.": "Reference answer.",
+        "Summarize the email routing and distribution lists used in the California energy trading thread.": "Routing answer.",
+    }
+    case = {"case_type": "allow_observer_metadata", "question": "Review the metadata for the internal planning thread."}
+
+    assert resolve_reference_answer(case, case["question"], reference_answers) == "Reference answer."
 
 
 @patch("azure.cosmos.CosmosClient")

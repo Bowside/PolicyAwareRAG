@@ -51,6 +51,38 @@
         "type": "no_person_names",
         "enforcement": "llm_spokesperson"
       }
+    },
+    {
+      "uid": "urn:policyaware:permission:business-observer:timeline-reconstruction",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["summarise", "summarize", "retrieve"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:business-observer",
+      "constraint": {
+        "leftOperand": "purpose",
+        "operator": "eq",
+        "rightOperand": "timeline_reconstruction"
+      },
+      "outputConstraint": {
+        "type": "no_person_names",
+        "enforcement": "llm_spokesperson"
+      }
+    },
+    {
+      "uid": "urn:policyaware:permission:business-observer:sentiment-analysis",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["summarise", "summarize", "retrieve"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:business-observer",
+      "constraint": {
+        "leftOperand": "purpose",
+        "operator": "eq",
+        "rightOperand": "sentiment_analysis"
+      },
+      "outputConstraint": {
+        "type": "no_person_names",
+        "enforcement": "llm_spokesperson"
+      }
     }
   ],
   "prohibition": [
