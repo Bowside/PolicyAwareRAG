@@ -234,6 +234,24 @@ def _format_context_document(document: Document) -> str:
     )
 
 
+def _deduplicate_documents(documents: List[Document]) -> List[Document]:
+    """Remove repeated document bodies while preserving retrieval order."""
+    unique_documents: List[Document] = []
+    seen_content = set()
+    for document in documents:
+        content_key = " ".join(document.page_content.split())
+        if not content_key:
+            content_key = " ".join(
+                str(document.metadata.get(field) or "").split()
+                for field in ("subject", "from", "date")
+            )
+        if content_key in seen_content:
+            continue
+        seen_content.add(content_key)
+        unique_documents.append(document)
+    return unique_documents
+
+
 def retrieve_documents(
     question: str,
     user_roles: Sequence[str] | None = None,
@@ -341,6 +359,7 @@ def retrieve_documents(
             )
         )
 
+    documents = _deduplicate_documents(documents)
     documents = _rerank_documents(question, documents)
 
     if audit_logger is not None:

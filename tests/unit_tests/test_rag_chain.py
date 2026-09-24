@@ -15,6 +15,7 @@ from app.policy_guard import (
     requires_semantic_policy_review,
 )
 from app.rag_chain import (
+    _deduplicate_documents,
     _rerank_documents,
     _format_context_document,
     build_rag_chain,
@@ -405,6 +406,21 @@ def test_rerank_documents_limits_context_and_prioritizes_query_overlap():
 
     assert len(ranked) == 1
     assert ranked[0].metadata["source"] == "second"
+
+
+def test_deduplicate_documents_collapses_repeated_email_bodies():
+    """Ensure repeated bodies keep only the first retrieved source."""
+    from langchain_core.documents import Document
+
+    documents = [
+        Document(page_content="Same email\nwith spacing", metadata={"source": "first"}),
+        Document(page_content="Same   email with   spacing", metadata={"source": "second"}),
+        Document(page_content="Different email", metadata={"source": "third"}),
+    ]
+
+    unique_documents = _deduplicate_documents(documents)
+
+    assert [document.metadata["source"] for document in unique_documents] == ["first", "third"]
 
 
 def test_format_context_document_includes_source_metadata():
