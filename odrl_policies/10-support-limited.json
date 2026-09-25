@@ -39,6 +39,30 @@
         "operator": "eq",
         "rightOperand": "incident_triage"
       }
+    },
+    {
+      "uid": "urn:policyaware:permission:customer-support-specialist:complaint-handling",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["summarise", "summarize", "retrieve", "audit"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:customer-support-specialist",
+      "constraint": {
+        "leftOperand": "purpose",
+        "operator": "eq",
+        "rightOperand": "complaint_handling"
+      }
+    },
+    {
+      "uid": "urn:policyaware:permission:customer-support-specialist:escalation-tracking",
+      "target": "urn:policyaware:asset:pii-rag-corpus",
+      "action": ["summarise", "summarize", "retrieve", "audit"],
+      "assigner": "urn:policyaware:party:policy-aware-rag",
+      "assignee": "urn:policyaware:role:customer-support-specialist",
+      "constraint": {
+        "leftOperand": "purpose",
+        "operator": "eq",
+        "rightOperand": "escalation_tracking"
+      }
     }
   ],
   "prohibition": [

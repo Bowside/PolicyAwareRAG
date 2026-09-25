@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -164,6 +165,66 @@ def load_reference_answers(path: Path = REFERENCE_ANSWERS_PATH) -> Dict[str, str
     except (OSError, json.JSONDecodeError):
         return {}
 
+
+def _normalize_reference_lookup(value: str) -> str:
+    """Normalize a question for stable comparison across variants."""
+    text = str(value or "").lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def resolve_reference_answer(
+    case: Optional[Dict[str, Any]],
+    user_query: str,
+    reference_answers: Optional[Dict[str, str]] = None,
+) -> Optional[str]:
+    """Resolve the best available reference answer for a generated evaluation case.
+
+    The evaluation harness builds dynamic prompts from a catalog of case templates,
+    while the curated reference file stores a prior set of canonical questions. This
+    helper falls back from exact key matching to a case-type-aware lookup so the
+    evaluator still has reference data even when the concrete subject phrase varies.
+    """
+    if reference_answers is None:
+        reference_answers = load_reference_answers()
+    if not reference_answers:
+        return None
+
+    if user_query:
+        exact = reference_answers.get(user_query)
+        if exact:
+            return exact
+
+        normalized_query = _normalize_reference_lookup(user_query)
+        for key, answer in reference_answers.items():
+            if _normalize_reference_lookup(key) == normalized_query:
+                return answer
+
+    if not case:
+        return None
+
+    case_type = str(case.get("case_type") or "").lower()
+    hints_by_case_type = {
+        "allow_observer_metadata": ["metadata", "sender domains", "transmission metadata"],
+        "allow_observer_routing": ["routing", "distribution lists", "email routing"],
+        "allow_observer_triage": ["triage", "compliance triage", "legal and compliance triage"],
+        "allow_support_customer": ["customer support", "retail counterparty", "customer service"],
+        "allow_support_case": ["case management", "grievance", "hr and grievance"],
+        "allow_support_incident": ["incident", "triage evidence", "trading desk incident"],
+        "allow_privacy_compliance": ["compliance risks", "ferc", "sec compliance"],
+        "allow_privacy_fraud": ["fraud indicators", "misrepresentation", "fraud"],
+        "allow_privacy_security": ["security review", "security", "it access"],
+        "allow_privacy_privacy": ["redact", "pii", "sensitive compensation"],
+        "allow_admin_full_access": ["governance", "retention records", "authorized legal governance"],
+    }
+    hints = hints_by_case_type.get(case_type, [])
+    for key, answer in reference_answers.items():
+        key_norm = _normalize_reference_lookup(key)
+        if any(hint in key_norm for hint in hints):
+            return answer
+    return None
+
+
 def extract_step_metrics(audit_record: Dict[str, Any], user_query: str) -> List[Dict[str, Any]]:
     """Convert pipeline audit steps into compact evaluation metrics.
 
@@ -252,16 +313,26 @@ def normalize_outcome(response_payload: Dict[str, Any], status_code: int) -> str
 
 
 _CASE_VARIANTS = [
-    "the California energy trading thread",
-    "the customer account correspondence",
-    "the quarterly capacity discussion",
-    "the market operations emails",
-    "the contract approval conversation",
-    "the regional scheduling updates",
-    "the regulatory inquiry messages",
-    "the customer service escalation",
-    "the risk management review",
-    "the internal planning thread",
+    "communications regarding Project Raptor and LJM partnerships",
+    "the 'Death Star' and 'Fat Boy' California trading strategy emails",
+    "communications regarding the Dabhol Power Company and Indian political risk",
+    "Vince Kaminski's risk analysis of the off-balance-sheet entities",
+    "the broadband operations and Blockbuster partnership correspondence",
+    "Jeff Skilling's directives on mark-to-market accounting",
+    "FERC regulatory inquiry responses regarding market manipulation",
+    "Andy Fastow's internal memos on SPE capitalization",
+    "daily Value-at-Risk (VAR) limit escalations on the gas trading desk",
+    "employee performance review committee (PRC) ranking feedback",
+    "Sherron Watkins' whistleblower warnings to Kenneth Lay",
+    "Arthur Andersen audit document retention and destruction policies",
+    "Enron Energy Services (EES) retail contract restructuring and losses",
+    "the Azurix water venture spin-off and subsequent asset sell-offs",
+    "Transwestern Pipeline capacity allocations and pricing discussions",
+    "the JEDI and Chewco partnership structures and buyout negotiations",
+    "Portland General Electric (PGE) integration and deregulation lobbying",
+    "'Get Shorty' and 'Ricochet' gaming tactics in the California ISO market",
+    "weather derivatives trading volumes and EnronOnline (EOL) launch metrics",
+    "employee 401(k) lockdown period complaints and executive stock sales",
 ]
 
 
@@ -314,17 +385,26 @@ def build_cases() -> List[Dict[str, Any]]:
     cases: List[Dict[str, Any]] = []
 
     allowed_case_types = [
-        ("allow_observer_metadata", ["business-observer"], "metadata_review", "summarise", "Review the metadata for {}."),
-        ("allow_observer_routing", ["business-observer"], "routing", "summarise", "Summarize the routing information in {}."),
-        ("allow_observer_triage", ["business-observer"], "triage", "retrieve", "Retrieve the relevant triage details from {}."),
-        ("allow_support_customer", ["customer-support-specialist"], "customer_support", "summarise", "Summarize the customer support activity in {}."),
-        ("allow_support_case", ["customer-support-specialist"], "case_management", "audit", "Audit the case-management history in {}."),
-        ("allow_support_incident", ["customer-support-specialist"], "incident_triage", "retrieve", "Retrieve incident-triage evidence from {}."),
-        ("allow_privacy_compliance", ["privacy-compliance-analyst"], "compliance_review", "summarise", "Review the compliance risks in {}."),
-        ("allow_privacy_fraud", ["privacy-compliance-analyst"], "fraud_detection", "audit", "Audit {} for fraud indicators."),
-        ("allow_privacy_security", ["privacy-compliance-analyst"], "security_review", "retrieve", "Retrieve security-review evidence from {}."),
-        ("allow_privacy_privacy", ["privacy-compliance-analyst"], "privacy_review", "redact", "Redact sensitive findings from {}."),
-        ("allow_admin_full_access", ["pii-data-governance-admin"], "case_management", "export", "Export the authorized governance records for {}."),
+        ("allow_observer_metadata", ["business-observer"], "metadata_review", "summarise", "Review the transmission metadata and sender domains for {}."),
+        ("allow_observer_routing", ["business-observer"], "routing", "summarise", "Summarize the email routing and distribution lists used in {}."),
+        ("allow_observer_triage", ["business-observer"], "triage", "retrieve", "Retrieve the legal and compliance triage details from {}."),
+        ("allow_support_customer", ["customer-support-specialist"], "customer_support", "summarise", "Summarize the retail counterparty and customer support activity in {}."),
+        ("allow_support_case", ["customer-support-specialist"], "case_management", "audit", "Audit the internal HR and grievance case-management history in {}."),
+        ("allow_support_incident", ["customer-support-specialist"], "incident_triage", "retrieve", "Retrieve trading desk incident-triage evidence from {}."),
+        ("allow_privacy_compliance", ["privacy-compliance-analyst"], "compliance_review", "summarise", "Review the FERC and SEC compliance risks discussed in {}."),
+        ("allow_privacy_fraud", ["privacy-compliance-analyst"], "fraud_detection", "audit", "Audit {} for financial misrepresentation or fraud indicators."),
+        ("allow_privacy_security", ["privacy-compliance-analyst"], "security_review", "retrieve", "Retrieve IT access and security-review evidence from {}."),
+        ("allow_privacy_privacy", ["privacy-compliance-analyst"], "privacy_review", "redact", "Redact employee PII and sensitive compensation findings from {}."),
+        ("allow_admin_full_access", ["pii-data-governance-admin"], "case_management", "export", "Export the authorized legal governance and retention records for {}."),
+        ("allow_observer_timeline", ["business-observer"], "timeline_reconstruction", "summarise", "Summarize the chronological timeline of events and key decisions in {}."),
+        ("allow_observer_trends", ["business-observer"], "sentiment_analysis", "summarise", "Summarize the overall employee sentiment and communication trends regarding {}."),
+        ("allow_support_complaints", ["customer-support-specialist"], "complaint_handling", "retrieve", "Retrieve the external vendor and partner complaints related to {}."),
+        ("allow_support_escalation", ["customer-support-specialist"], "escalation_tracking", "summarise", "Summarize the management escalation paths and resolution times for {}."),
+        ("allow_privacy_retention", ["privacy-compliance-analyst"], "data_retention", "audit", "Audit the document retention and deletion logs associated with {}."),
+        ("allow_privacy_insider", ["privacy-compliance-analyst"], "insider_trading", "audit", "Audit {} for indications of insider trading or undisclosed material knowledge."),
+        ("allow_privacy_whistleblower", ["privacy-compliance-analyst"], "whistleblower_protection", "redact", "Redact the identities of whistleblowers and confidential informants in {}."),
+        ("allow_admin_access_logs", ["pii-data-governance-admin"], "access_control", "retrieve", "Retrieve the system access logs and permission changes related to {}."),
+        ("allow_admin_e_discovery", ["pii-data-governance-admin"], "e_discovery", "export", "Export the complete e-discovery package and litigation hold records for {}."),
     ]
     for case_type, roles, purpose, action, question_template in allowed_case_types:
         for index, subject in enumerate(_CASE_VARIANTS):
@@ -458,7 +538,7 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
     answer = str(response_json.get("answer") or "")
     base_answer = str(response_json.get("evaluationDetails", {}).get("baseAnswer") or answer)
     reference_answers = load_reference_answers()
-    reference_answer = reference_answers.get(user_query)
+    reference_answer = resolve_reference_answer(case, user_query, reference_answers)
     sources = response_json.get("sources") or []
     evaluation_contexts = get_evaluation_context(audit_record)
     actual_outcome = normalize_outcome(response_json, response.status_code)

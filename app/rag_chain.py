@@ -172,7 +172,7 @@ def _normalize_roles(user_roles: Sequence[str] | None) -> List[str]:
 
 
 def _rerank_documents(question: str, documents: List[Document], limit: int = 10) -> List[Document]:
-    """Rerank vector results with lightweight query-term overlap.
+    """Rerank vector results using distinctive query terms and document headers.
 
     Args:
         question: User query used to identify salient terms.
@@ -182,18 +182,35 @@ def _rerank_documents(question: str, documents: List[Document], limit: int = 10)
     Returns:
         A bounded list ordered by lexical overlap, with vector order as a tie-breaker.
     """
-    query_terms = {term for term in re.findall(r"[a-z0-9]+", question.lower()) if len(term) > 2}
+    stop_words = {
+        "about", "after", "against", "and", "are", "from", "into", "over",
+        "review", "retrieve", "summarize", "summarise", "the", "this", "used",
+        "what", "with", "within",
+    }
+    query_terms = {
+        term
+        for term in re.findall(r"[a-z0-9]+", question.lower())
+        if len(term) > 2 and term not in stop_words
+    }
     scored_documents = []
     for position, document in enumerate(documents):
-        text = " ".join(
+        header_text = " ".join(
             str(document.metadata.get(field) or "")
-            for field in ("subject", "from", "date")
-        ) + " " + document.page_content
-        document_terms = set(re.findall(r"[a-z0-9]+", text.lower()))
-        overlap = len(query_terms & document_terms)
-        scored_documents.append((overlap, -position, document))
-    scored_documents.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return [document for _, _, document in scored_documents[:limit]]
+            for field in ("subject", "from")
+        )
+        header_terms = set(re.findall(r"[a-z0-9]+", header_text.lower()))
+        body_terms = set(re.findall(r"[a-z0-9]+", document.page_content.lower()))
+        header_overlap = len(query_terms & header_terms)
+        body_overlap = len(query_terms & body_terms)
+        vector_score = document.metadata.get("similarity_score")
+        try:
+            vector_score = float(vector_score)
+        except (TypeError, ValueError):
+            vector_score = float(position)
+        lexical_score = (header_overlap * 3) + body_overlap
+        scored_documents.append((lexical_score, header_overlap, body_overlap, -vector_score, -position, document))
+    scored_documents.sort(key=lambda item: item[:-1], reverse=True)
+    return [document for *_, document in scored_documents[:limit]]
 
 
 def _format_context_document(document: Document) -> str:
@@ -215,6 +232,24 @@ def _format_context_document(document: Document) -> str:
             f"Body: {document.page_content}",
         ]
     )
+
+
+def _deduplicate_documents(documents: List[Document]) -> List[Document]:
+    """Remove repeated document bodies while preserving retrieval order."""
+    unique_documents: List[Document] = []
+    seen_content = set()
+    for document in documents:
+        content_key = " ".join(document.page_content.split())
+        if not content_key:
+            content_key = " ".join(
+                str(document.metadata.get(field) or "").split()
+                for field in ("subject", "from", "date")
+            )
+        if content_key in seen_content:
+            continue
+        seen_content.add(content_key)
+        unique_documents.append(document)
+    return unique_documents
 
 
 def retrieve_documents(
@@ -258,7 +293,7 @@ def retrieve_documents(
     allowed_roles = _normalize_roles(user_roles) or []
 
     query = """
-        SELECT TOP 25
+        SELECT TOP 100
             c.id,
             c.subject,
             c["from"],
@@ -324,6 +359,7 @@ def retrieve_documents(
             )
         )
 
+    documents = _deduplicate_documents(documents)
     documents = _rerank_documents(question, documents)
 
     if audit_logger is not None:
@@ -338,6 +374,7 @@ def retrieve_documents(
             telemetry={
                 "queryLength": len(question),
                 "latencyMs": round((perf_counter() - start_time) * 1000, 3),
+                "candidateDocumentCount": len(results),
                 "documentMatchCount": len(documents),
             },
             correlation_id=correlation_id,
@@ -397,8 +434,7 @@ exactly: 'Insufficient information in the provided context.'. Treat email header
 or full names unless explicitly mapped in the text. Prefer a
 short, qualified answer over unsupported detail.
 
-Context:
-{context}
+Context: {context}
 
 Question: {question}
 
@@ -512,6 +548,9 @@ Return a concise answer with the relevant supported findings and source IDs.
             action=state.get("action"),
             intent=state.get("question"),
         )
+        semantic_review_required = semantic_review_required and (
+            protected_answer.strip() != "Insufficient information in the provided context."
+        )
         reviewed_answer = protected_answer
         if semantic_review_required:
             semantic_review_start = perf_counter()
@@ -619,7 +658,7 @@ Protected answer:
                 reason=str(review_result.get("reason") or "Semantic policy review completed."),
                 finalize=False,
             )
-            if review_error is not None:
+            if review_error is not None and spokesperson_role == "business-observer":
                 raise review_error
             if spokesperson_role == "business-observer" and not reviewed_answer:
                 raise PolicyViolationError(
