@@ -71,6 +71,8 @@ The Enron email vector corpus is built by `utils/Load_VectorDB.ipynb`. Before em
 
 Each chunk is embedded from its subject, sender, and body text and retains the source metadata. Ingestion adds `parent_id`, `chunk_id`, `chunk_index`, and `chunk_count` so retrieved chunks can be traced back to their source email. Embedding and upload batches contain 100 chunks.
 
+Security metadata is assigned before chunking with the versioned `keyword_and_pii_rules_v1` classifier. It detects legal, HR, financial, personal, and credential keywords plus email, phone, SSN, and credit-card patterns, then assigns `public`, `internal`, `sensitive`, or `restricted` access tiers. Each tier maps to an explicit policy-role allow-list, and each chunk records the tier, matched evidence, PII match count, and labeling method. These are deterministic proxy labels for evaluation, not independently validated ground truth.
+
 ## Notes
 
 The retrieval logic is designed to query the live Enron email vector store in Cosmos DB using the configured embedding model and the Foundry GPT-4o-mini chat model.

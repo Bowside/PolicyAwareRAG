@@ -2,7 +2,7 @@
 
 `run_evaluations.py` sends the defined evaluation cases to the live PolicyAwareRAG Function App and writes a JSON result file containing outcomes, latency, token estimates, resolved evaluation context, audit-step metrics, and optional RAGAS scores.
 
-The application retrieves up to 20 vector candidates, applies policy filtering, reranks them by query-term overlap, and sends at most 8 documents to generation. The answer prompt uses source-labeled evidence and requires citations for factual claims. The vector corpus uses `google/embeddinggemma-300m`; its source emails are normalized and split into 1,200-character chunks with 200-character overlap before embedding.
+The application retrieves up to 20 vector candidates, applies policy filtering, reranks them by query-term overlap, and sends at most 8 documents to generation. The answer prompt uses source-labeled evidence and requires citations for factual claims. The vector corpus uses `google/embeddinggemma-300m`; its source emails are normalized and split into 1,200-character chunks with 200-character overlap before embedding. Security metadata is assigned deterministically with `keyword_and_pii_rules_v1` before chunking and copied to every chunk from the source email.
 
 ## Prerequisites
 
