@@ -21,6 +21,7 @@ from app.rag_chain import (
     build_rag_chain,
     build_vector_store,
     get_cosmos_settings,
+    get_embedding_model,
     get_foundry_settings,
     retrieve_documents,
 )
@@ -52,6 +53,23 @@ def test_get_foundry_settings_uses_environment_values(monkeypatch):
     assert settings["chat_model"] == "gpt-4o-mini"
     assert settings["embedding_model"] == "text-embedding-3-small"
     assert settings["temperature"] == 0.25
+
+
+@patch("app.rag_chain.SentenceTransformer")
+def test_get_embedding_model_passes_huggingface_token(mock_sentence_transformer, monkeypatch):
+    """Ensure private Hugging Face embedding models receive the configured token."""
+    import app.rag_chain as rag_chain
+
+    monkeypatch.setenv("LOCAL_EMBEDDING_MODEL", "google/embeddinggemma-300m")
+    monkeypatch.setenv("HUGGINGFACE_TOKEN", "test-huggingface-token")
+    monkeypatch.setattr(rag_chain, "_EMBEDDING_MODEL", None)
+
+    get_embedding_model()
+
+    mock_sentence_transformer.assert_called_once_with(
+        "google/embeddinggemma-300m",
+        token="test-huggingface-token",
+    )
 
 
 def test_extract_step_metrics_preserves_named_audit_steps():
@@ -169,7 +187,7 @@ def test_get_cosmos_settings_uses_environment_values(monkeypatch):
     monkeypatch.setenv("COSMOSDB_KEY", "test-cosmos-key")
     monkeypatch.setenv("COSMOSDB_DATABASE", "policy_rag_db")
     monkeypatch.setenv("COSMOSDB_COLLECTION", "EnronEmailVectorStore")
-    monkeypatch.setenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    monkeypatch.setenv("EMBEDDING_MODEL", "google/embeddinggemma-300m")
 
     settings = get_cosmos_settings()
 
@@ -177,7 +195,7 @@ def test_get_cosmos_settings_uses_environment_values(monkeypatch):
     assert settings["key"] == "test-cosmos-key"
     assert settings["database"] == "policy_rag_db"
     assert settings["container"] == "EnronEmailVectorStore"
-    assert settings["embedding_model"] == "all-MiniLM-L6-v2"
+    assert settings["embedding_model"] == "google/embeddinggemma-300m"
 
 
 @patch("app.rag_chain.get_cosmos_container")

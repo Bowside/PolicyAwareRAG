@@ -34,7 +34,6 @@ load_dotenv()
 
 _EMBEDDING_MODEL = None
 
-
 def _estimate_tokens(value: Any) -> int:
     """Estimate tokens from text using the evaluation harness heuristic.
 
@@ -75,9 +74,9 @@ def get_foundry_settings() -> Dict[str, Any]:
     return {
         "endpoint": os.getenv("FOUNDRY_ENDPOINT"),
         "api_key": os.getenv("FOUNDRY_API_KEY"),
-        "chat_model": os.getenv("FOUNDRY_CHAT_MODEL", "gpt-4o-mini"),
-        "embedding_model": os.getenv("FOUNDRY_EMBEDDING_MODEL", "text-embedding-3-small"),
-        "temperature": float(os.getenv("FOUNDRY_TEMPERATURE", "1.0")),
+        "chat_model": os.getenv("FOUNDRY_CHAT_MODEL"),
+        "embedding_model": os.getenv("LOCAL_EMBEDDING_MODEL", "FOUNDRY_EMBEDDING_MODEL"),
+        "temperature": float(os.getenv("FOUNDRY_TEMPERATURE", "0.3")),
     }
 
 
@@ -93,7 +92,7 @@ def get_cosmos_settings() -> Dict[str, str]:
         "key": os.getenv("COSMOSDB_KEY"),
         "database": os.getenv("COSMOSDB_DATABASE"),
         "container": os.getenv("COSMOSDB_COLLECTION"),
-        "embedding_model": os.getenv("EMBEDDING_MODEL"),
+        "embedding_model": os.getenv("LOCAL_EMBEDDING_MODEL", "FOUNDRY_EMBEDDING_MODEL"),
     }
 
 
@@ -105,8 +104,28 @@ def get_embedding_model() -> SentenceTransformer:
     """
     global _EMBEDDING_MODEL
     if _EMBEDDING_MODEL is None:
-        _EMBEDDING_MODEL = SentenceTransformer(get_cosmos_settings()["embedding_model"])
+        huggingface_token = os.getenv("HUGGINGFACE_TOKEN")
+        _EMBEDDING_MODEL = SentenceTransformer(
+            get_cosmos_settings()["embedding_model"],
+            token=huggingface_token,
+        )
     return _EMBEDDING_MODEL
+
+
+def _encode_embedding(text: str, query: bool) -> List[float]:
+    """Encode text using EmbeddingGemma's query or document instruction."""
+    model = get_embedding_model()
+    method_name = "encode_query" if query else "encode_document"
+    encode_method = getattr(model, method_name, None)
+    if callable(encode_method):
+        embedding = encode_method(text, normalize_embeddings=True)
+    else:
+        embedding = model.encode(
+            text,
+            prompt_name="query" if query else "document",
+            normalize_embeddings=True,
+        )
+    return embedding.tolist()
 
 
 def build_vector_store():
@@ -150,7 +169,7 @@ def embed_query(question: str) -> List[float]:
     Returns:
         The normalized embedding vector for the query.
     """
-    return get_embedding_model().encode(question, normalize_embeddings=True).tolist()
+    return _encode_embedding(question, query=True)
 
 
 def _normalize_roles(user_roles: Sequence[str] | None) -> List[str]:
@@ -349,10 +368,13 @@ def retrieve_documents(
             Document(
                 page_content=item.get("body") or item.get("subject") or "",
                 metadata={
-                    "source": item.get("id") or item.get("subject") or "enron-email",
+                    "source": item.get("parent_id") or item.get("id") or item.get("subject") or "enron-email",
                     "subject": item.get("subject"),
                     "from": item.get("from"),
                     "date": item.get("date"),
+                    "chunk_id": item.get("chunk_id"),
+                    "chunk_index": item.get("chunk_index"),
+                    "parent_id": item.get("parent_id") or item.get("id"),
                     "similarity_score": item.get("similarity_score"),
                     "securityMetadata": metadata,
                 },

@@ -34,7 +34,9 @@ A Python Azure Functions app for Enron email retrieval using LangChain, LangGrap
    ```
 
 3. Copy `local.settings.sample.json` to `local.settings.json` and fill in your Microsoft Foundry values.
-4. Start the function app:
+4. Before downloading the local embedding model, create or sign in to a Hugging Face account, open the `google/embeddinggemma-300m` model page, and accept Google's applicable usage terms/license. Create a Hugging Face access token with permission to read the model.
+5. Add the token to `local.settings.json` as `HUGGINGFACE_TOKEN`. The application passes this token to `sentence-transformers` when it initializes the embedding model.
+6. Start the function app:
 
    ```bash
    func start
@@ -59,8 +61,15 @@ A Python Azure Functions app for Enron email retrieval using LangChain, LangGrap
 - `COSMOSDB_KEY`
 - `COSMOSDB_DATABASE`
 - `COSMOSDB_COLLECTION` (set to `EnronEmailVectorStore`)
-- `EMBEDDING_MODEL` (set to `all-MiniLM-L6-v2`)
+- `LOCAL_EMBEDDING_MODEL` (set to `google/embeddinggemma-300m`; the model produces 768-dimensional vectors)
+- `HUGGINGFACE_TOKEN` (a Hugging Face access token with read access to `google/embeddinggemma-300m`; required after accepting the model's Google usage terms)
 - `ENABLE_EVALUATION_DETAILS` (set to `true` only for controlled evaluation runs that need the pre-guardrail answer)
+
+## Embedding corpus and chunking
+
+The Enron email vector corpus is built by `utils/Load_VectorDB.ipynb`. Before embedding, email text is normalized and split with LangChain's `RecursiveCharacterTextSplitter` using a 1,200-character chunk size and 200-character overlap. Separators are tried in this order: paragraph breaks, line breaks, spaces, and individual characters.
+
+Each chunk is embedded from its subject, sender, and body text and retains the source metadata. Ingestion adds `parent_id`, `chunk_id`, `chunk_index`, and `chunk_count` so retrieved chunks can be traced back to their source email. Embedding and upload batches contain 100 chunks.
 
 ## Notes
 

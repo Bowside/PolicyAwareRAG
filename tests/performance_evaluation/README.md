@@ -2,7 +2,7 @@
 
 `run_evaluations.py` sends the defined evaluation cases to the live PolicyAwareRAG Function App and writes a JSON result file containing outcomes, latency, token estimates, resolved evaluation context, audit-step metrics, and optional RAGAS scores.
 
-The application retrieves up to 20 vector candidates, applies policy filtering, reranks them by query-term overlap, and sends at most 8 documents to generation. The answer prompt uses source-labeled evidence and requires citations for factual claims.
+The application retrieves up to 20 vector candidates, applies policy filtering, reranks them by query-term overlap, and sends at most 8 documents to generation. The answer prompt uses source-labeled evidence and requires citations for factual claims. The vector corpus uses `google/embeddinggemma-300m`; its source emails are normalized and split into 1,200-character chunks with 200-character overlap before embedding.
 
 ## Prerequisites
 
@@ -24,6 +24,8 @@ ENABLE_EVALUATION_DETAILS=true
 ```
 
 `ENABLE_EVALUATION_DETAILS` is optional and should be enabled only for controlled evaluation runs. When enabled, requests that explicitly include evaluation details return the pre-guardrail answer in addition to the final guarded answer. Normal API responses remain unchanged when it is disabled.
+
+The deployed Function App must also have `LOCAL_EMBEDDING_MODEL=google/embeddinggemma-300m` and `HUGGINGFACE_TOKEN` configured. To obtain the model, create or sign in to a Hugging Face account, accept Google's applicable usage terms/license on the `google/embeddinggemma-300m` model page, and create a read access token. Do not commit the token to the repository.
 
 To retrieve audit records and per-step metrics, also set:
 
