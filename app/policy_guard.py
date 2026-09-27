@@ -360,6 +360,11 @@ def redact_response_for_role(
             response,
         )
         redacted = re.sub(r"\b\d{3}-\d{2}-\d{4}\b", "[REDACTED_SSN]", redacted)
+        redacted = re.sub(
+            r"(?<!\d)(?:\+?\d[\d(). -]{7,}\d)(?!\d)",
+            "[REDACTED_PHONE]",
+            redacted,
+        )
         return redacted
     return response
 

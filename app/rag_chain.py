@@ -62,6 +62,8 @@ class RAGState(TypedDict):
     action: str
     correlation_id: str
     user_id: str
+    policy_denied: bool
+    policy_denial_reason: str
 
 
 def get_foundry_settings() -> Dict[str, Any]:
@@ -585,6 +587,8 @@ Return a concise answer with the relevant supported findings and source IDs.
             protected_answer.strip() != "Insufficient information in the provided context."
         )
         reviewed_answer = protected_answer
+        policy_denied = False
+        policy_denial_reason = ""
         if semantic_review_required:
             semantic_review_start = perf_counter()
             semantic_review_prompt = ChatPromptTemplate.from_template(
@@ -664,7 +668,12 @@ Protected answer:
             if spokesperson_role != "business-observer":
                 reviewed_answer = protected_answer
             semantic_review_latency = round((perf_counter() - semantic_review_start) * 1000, 3)
-            review_status = "ALLOWED" if review_error is None and reviewed_answer else "DENIED"
+            policy_denied = review_error is not None or decision != "ALLOW" or not reviewed_answer
+            policy_denial_reason = str(
+                review_result.get("reason")
+                or (review_error or "Semantic policy review denied the response.")
+            )
+            review_status = "DENIED" if policy_denied else "ALLOWED"
             request_audit_logger.emit(
                 step_name="SemanticPolicyReview",
                 execution_status=review_status,
@@ -691,24 +700,33 @@ Protected answer:
                 reason=str(review_result.get("reason") or "Semantic policy review completed."),
                 finalize=False,
             )
-            if review_error is not None and spokesperson_role == "business-observer":
-                raise review_error
-            if spokesperson_role == "business-observer" and not reviewed_answer:
-                raise PolicyViolationError(
-                    "Policy denial: spokesperson returned no sanitized answer."
-                )
-            # Deterministic authorization remains authoritative. For roles other
-            # than business-observer, the semantic model cannot turn an answer-
-            # quality concern into a policy denial.
+            if policy_denied:
+                reviewed_answer = ""
         state["answer"] = reviewed_answer
         state["base_answer"] = answer
+        state["policy_denied"] = policy_denied
+        state["policy_denial_reason"] = policy_denial_reason
         return state
+
+    def policy_denied(state: RAGState) -> RAGState:
+        """Terminate generation after a semantic policy denial."""
+        return state
+
+    def route_after_answer(state: RAGState) -> str:
+        """Route denied answers to the terminal denial node."""
+        return "deny" if state.get("policy_denied", False) else "deliver"
 
     graph = StateGraph(RAGState)
     graph.add_node("retrieve", retrieve)
     graph.add_node("generate_answer", answer)
+    graph.add_node("policy_denied", policy_denied)
     graph.add_edge("retrieve", "generate_answer")
-    graph.add_edge("generate_answer", END)
+    graph.add_conditional_edges(
+        "generate_answer",
+        route_after_answer,
+        {"deliver": END, "deny": "policy_denied"},
+    )
+    graph.add_edge("policy_denied", END)
     graph.set_entry_point("retrieve")
     return graph.compile()
 

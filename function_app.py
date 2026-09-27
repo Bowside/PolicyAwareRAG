@@ -108,6 +108,12 @@ def rag_http(req: func.HttpRequest) -> func.HttpResponse:
             "user_id": user_id,
         })
 
+        if result.get("policy_denied"):
+            raise PolicyViolationError(
+                result.get("policy_denial_reason")
+                or "Policy denial: semantic policy review denied the response."
+            )
+
         final_answer = result.get("answer", "")
         output_start = perf_counter()
         final_status = "REDACTED" if final_answer != result.get("answer", "") else "ALLOWED"

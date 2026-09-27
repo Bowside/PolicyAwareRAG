@@ -253,6 +253,7 @@ def test_build_rag_chain_instantiates_graph_components(
     assert "complete retrieved email content" in prompt_text
     mock_graph.add_node.assert_called()
     mock_graph.add_edge.assert_called()
+    mock_graph.add_conditional_edges.assert_called_once()
     mock_graph.set_entry_point.assert_called_once_with("retrieve")
     assert result is mock_compiled
 
@@ -277,6 +278,17 @@ def test_redact_response_masks_email_for_limited_role():
 
     assert "example.com" not in redacted
     assert "[REDACTED_EMAIL]" in redacted
+
+
+def test_redact_response_masks_phone_for_limited_role():
+    """Ensure limited roles receive deterministic telephone redaction."""
+    redacted = redact_response_for_role(
+        "Call Jane at +1 (212) 555-0123 for approval.",
+        "business-observer",
+    )
+
+    assert "555-0123" not in redacted
+    assert "[REDACTED_PHONE]" in redacted
 
 
 def test_load_odrl_policies_includes_expected_roles_and_permissions():
