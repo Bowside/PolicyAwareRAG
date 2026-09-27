@@ -302,7 +302,8 @@ def retrieve_documents(
     Cosmos DB can reject complex nested-array predicates in some vector-query shapes,
     so we intentionally keep the query broad and apply the role enforcement in Python
     after retrieval. This preserves compatibility while still enforcing the document
-    security metadata contract. Records with no `securityMetadata` remain eligible.
+    security metadata contract. When caller roles are supplied, records without
+    an explicit security label are excluded rather than treated as public.
     """
     if user_roles is not None:
         evaluate_intent_against_odrl(question, user_roles, purpose=purpose, action=action)
@@ -319,6 +320,10 @@ def retrieve_documents(
             c.to,
             c.date,
             c.body,
+            c.parent_id,
+            c.chunk_id,
+            c.chunk_index,
+            c.chunk_count,
             c.securityMetadata,
             VectorDistance(c.vector, @embedding) AS similarity_score
         FROM c
@@ -362,8 +367,9 @@ def retrieve_documents(
         if isinstance(allowed_roles_for_item, str):
             allowed_roles_for_item = [allowed_roles_for_item]
         doc_roles = [str(role).lower() for role in allowed_roles_for_item]
-        if allowed_roles and doc_roles and not any(role.lower() in doc_roles for role in [r.lower() for r in allowed_roles]):
-            continue
+        if allowed_roles:
+            if not doc_roles or not any(role.lower() in doc_roles for role in allowed_roles):
+                continue
         documents.append(
             Document(
                 page_content=item.get("body") or item.get("subject") or "",
@@ -374,6 +380,7 @@ def retrieve_documents(
                     "date": item.get("date"),
                     "chunk_id": item.get("chunk_id"),
                     "chunk_index": item.get("chunk_index"),
+                    "chunk_count": item.get("chunk_count"),
                     "parent_id": item.get("parent_id") or item.get("id"),
                     "similarity_score": item.get("similarity_score"),
                     "securityMetadata": metadata,

@@ -384,9 +384,19 @@ def test_retrieve_documents_filters_by_security_metadata(mock_embed_query, mock_
     mock_get_cosmos_container.return_value.query_items.return_value = [
         {
             "id": "allowed",
+            "parent_id": "email-allowed",
+            "chunk_id": "email-allowed_chunk_0",
+            "chunk_index": 0,
+            "chunk_count": 1,
             "subject": "Allowed",
             "body": "Allowed body",
-            "securityMetadata": {"policyRole": ["privacy-compliance-analyst"]},
+            "securityMetadata": {
+                "policyRole": ["privacy-compliance-analyst"],
+                "sensitivityTier": "sensitive",
+                "labelingMethod": "keyword_and_pii_rules_v1",
+                "labelEvidence": ["category:legal"],
+                "piiMatchCount": 0,
+            },
         },
         {
             "id": "blocked",
@@ -408,7 +418,10 @@ def test_retrieve_documents_filters_by_security_metadata(mock_embed_query, mock_
         action="retrieve",
     )
 
-    assert [doc.metadata["source"] for doc in docs] == ["allowed", "no-metadata"]
+    assert [doc.metadata["source"] for doc in docs] == ["email-allowed"]
+    assert docs[0].metadata["chunk_id"] == "email-allowed_chunk_0"
+    assert docs[0].metadata["chunk_count"] == 1
+    assert docs[0].metadata["securityMetadata"]["sensitivityTier"] == "sensitive"
 
 
 def test_rerank_documents_limits_context_and_prioritizes_query_overlap():
