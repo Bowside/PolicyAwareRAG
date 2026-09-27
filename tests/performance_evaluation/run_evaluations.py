@@ -131,19 +131,32 @@ def get_evaluation_context(audit_record: Dict[str, Any]) -> List[str]:
         container_name = os.getenv("COSMOSDB_COLLECTION", "EnronEmailVectorStore")
         client = CosmosClient(url=cosmos_endpoint, credential=cosmos_key)
         container = client.get_database_client(database_name).get_container_client(container_name)
-        context_by_id: Dict[str, str] = {}
+        contexts: List[str] = []
         for document_id in document_ids:
             records = list(
                 container.query_items(
-                    query="SELECT c.id, c.subject, c.body FROM c WHERE c.id = @id",
+                    query=(
+                        "SELECT c.id, c.parent_id, c.subject, c.body, "
+                        "c.chunk_index, c.chunk_count, c.securityMetadata "
+                        "FROM c WHERE c.id = @id OR c.parent_id = @id"
+                    ),
                     parameters=[{"name": "@id", "value": str(document_id)}],
                     enable_cross_partition_query=True,
                 )
             )
-            if records:
-                record = records[0]
-                context_by_id[str(document_id)] = str(record.get("body") or record.get("subject") or "")
-        return [context_by_id[str(document_id)] for document_id in document_ids if str(document_id) in context_by_id]
+            records.sort(
+                key=lambda record: (
+                    record.get("chunk_index") is None,
+                    record.get("chunk_index") or 0,
+                    str(record.get("id") or ""),
+                )
+            )
+            contexts.extend(
+                str(record.get("body") or record.get("subject") or "")
+                for record in records
+                if record.get("body") or record.get("subject")
+            )
+        return contexts
     except Exception:
         return []
 
@@ -376,11 +389,11 @@ def _make_case(
 
 
 def build_cases() -> List[Dict[str, Any]]:
-    """Build a balanced catalog of 120 policy-oriented evaluation cases.
+    """Build a balanced catalog of 420 policy-oriented evaluation cases.
 
     Returns:
-        Ten cases for each of twelve policy case types, covering allowed and
-        prohibited role, purpose, and action combinations.
+        Twenty cases for each of twenty-one policy case types, covering allowed
+        and prohibited role, purpose, and action combinations.
     """
     cases: List[Dict[str, Any]] = []
 
@@ -510,6 +523,7 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
         "purpose": case["purpose"],
         "action": case["action"],
         "userId": case.get("userId", "eval-user"),
+        "correlationId": f"eval-{uuid.uuid4()}",
         "includeEvaluationDetails": os.getenv("ENABLE_EVALUATION_DETAILS", "false").lower() == "true",
     }
     headers = {"Content-Type": "application/json"}
@@ -530,6 +544,7 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
         response_text = json.dumps(response_json, ensure_ascii=False)
 
     correlation_id = response_json.get("correlationId")
+    correlation_id_match = correlation_id == payload["correlationId"]
     user_query = case["question"]
     audit_record = get_audit_record(correlation_id)
     step_metrics = extract_step_metrics(audit_record, user_query)
@@ -567,8 +582,10 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
         "base_answer": base_answer,
         "reference_answer": reference_answer,
         "evaluation_contexts": evaluation_contexts,
+        "requestCorrelationId": payload["correlationId"],
         "correlationId": correlation_id,
-        "passed": actual_outcome in case.get(
+        "correlationIdMatch": correlation_id_match,
+        "passed": correlation_id_match and actual_outcome in case.get(
             "acceptable_outcomes",
             [case.get("expected_outcome")],
         ),

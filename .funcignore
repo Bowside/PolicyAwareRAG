@@ -11,3 +11,4 @@ utils/
 .env
 local.settings.json
 local.settings.sample.json
+*.md

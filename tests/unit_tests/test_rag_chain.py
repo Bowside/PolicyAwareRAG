@@ -249,6 +249,8 @@ def test_build_rag_chain_instantiates_graph_components(
     assert "no personal" not in prompt_text
     assert "context is insufficient" in prompt_text.replace("\n", " ")
     assert "cite the supporting source ID" in prompt_text
+    assert "The requested action is {action}" in prompt_text
+    assert "complete retrieved email content" in prompt_text
     mock_graph.add_node.assert_called()
     mock_graph.add_edge.assert_called()
     mock_graph.set_entry_point.assert_called_once_with("retrieve")

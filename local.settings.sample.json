@@ -12,7 +12,7 @@
     "COSMOSDB_KEY": "<your-cosmos-key>",
     "COSMOSDB_DATABASE": "<your-database>",
     "COSMOSDB_COLLECTION": "EnronEmailVectorStore",
-    "EMBEDDING_MODEL": "google/embeddinggemma-300m",
+    "LOCAL_EMBEDDING_MODEL": "google/embeddinggemma-300m",
     "ENABLE_EVALUATION_DETAILS": "true"
   }
 }
