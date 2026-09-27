@@ -46,7 +46,8 @@ The `.env` file is ignored by Git and must not be committed.
 python tests/performance_evaluation/run_evaluations.py
 ```
 
-By default, all 120 evaluation cases run with a maximum of 4 concurrent threads.
+By default, all 430 evaluation cases run with a maximum of 4 concurrent threads,
+including 10 deterministic red-team cases.
 
 ## Control threads and test count
 
@@ -57,8 +58,10 @@ specific number of cases across the policy case types:
 python tests/performance_evaluation/run_evaluations.py --max-threads 8 --max-tests 25
 ```
 
-In this example, 25 cases are sampled across the 12 case types and run with at
-most 8 concurrent workers. Both values must be at least 1. If `--max-tests` is
+In this example, 25 cases are sampled across the standard case types and run
+with at most 8 concurrent workers. Both values must be at least 1. When
+`--max-tests` is supplied, the sample reserves `ceil(max-tests * 0.10)` cases
+for the red-team suite, with at least one red-team case. If `--max-tests` is
 omitted, all cases run.
 
 Use `--seed` to reproduce the same sample later:
@@ -67,8 +70,10 @@ Use `--seed` to reproduce the same sample later:
 python tests/performance_evaluation/run_evaluations.py --max-tests 25 --seed 42
 ```
 
-Each case type has 10 variants covering the ODRL roles and purposes for
+The standard suite has 20 variants for each of 21 policy case types covering
 observer, support, privacy, administrator, and prohibited-export scenarios.
+The red-team suite covers prompt injection, privilege escalation, role spoofing,
+missing roles, purpose mismatches, and action mismatches.
 
 You can view all options with:
 
