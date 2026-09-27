@@ -439,6 +439,26 @@ def test_rerank_documents_limits_context_and_prioritizes_query_overlap():
     assert ranked[0].metadata["source"] == "second"
 
 
+def test_rerank_documents_does_not_reward_sender_address_matches():
+    """Ensure sender terms do not outrank evidence in the message body."""
+    from langchain_core.documents import Document
+
+    documents = [
+        Document(
+            page_content="Routine archive notice",
+            metadata={"subject": "Routine notice", "from": "security-review@example.com", "source": "sender"},
+        ),
+        Document(
+            page_content="Detailed security review findings and controls",
+            metadata={"subject": "Review", "from": "analyst@example.com", "source": "body"},
+        ),
+    ]
+
+    ranked = _rerank_documents("security review", documents, limit=2)
+
+    assert [document.metadata["source"] for document in ranked] == ["body", "sender"]
+
+
 def test_deduplicate_documents_collapses_repeated_email_bodies():
     """Ensure repeated bodies keep only the first retrieved source."""
     from langchain_core.documents import Document

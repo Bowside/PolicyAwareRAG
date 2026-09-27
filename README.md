@@ -79,4 +79,6 @@ The retrieval logic is designed to query the live Enron email vector store in Co
 
 Retrieved candidates are policy-filtered, reranked using query-term overlap, and bounded before answer generation. The answer prompt requires claims to be supported by source-labeled evidence and to cite source IDs. Normal API responses expose the final guarded answer only; pre-guardrail answers are returned only when `ENABLE_EVALUATION_DETAILS=true` and the request explicitly asks for evaluation details.
 
+Lexical reranking uses body-term overlap and a modest 2x subject-term weight. Sender addresses are not used as a lexical signal because users rarely query by address and sender frequency can bias results. Set `RAG_RERANKING_MODE=vector` to disable lexical reranking and retain vector-search order for a with/without-reranking ablation.
+
 For evaluation setup, result interpretation, RAGAS metrics, token-stage reporting, and chart exports, see [tests/performance_evaluation/README.md](tests/performance_evaluation/README.md).

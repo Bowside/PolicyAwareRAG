@@ -191,7 +191,7 @@ def _normalize_roles(user_roles: Sequence[str] | None) -> List[str]:
 
 
 def _rerank_documents(question: str, documents: List[Document], limit: int = 10) -> List[Document]:
-    """Rerank vector results using distinctive query terms and document headers.
+    """Rerank vector results using body and subject lexical overlap.
 
     Args:
         question: User query used to identify salient terms.
@@ -213,21 +213,17 @@ def _rerank_documents(question: str, documents: List[Document], limit: int = 10)
     }
     scored_documents = []
     for position, document in enumerate(documents):
-        header_text = " ".join(
-            str(document.metadata.get(field) or "")
-            for field in ("subject", "from")
-        )
-        header_terms = set(re.findall(r"[a-z0-9]+", header_text.lower()))
+        subject_terms = set(re.findall(r"[a-z0-9]+", str(document.metadata.get("subject") or "").lower()))
         body_terms = set(re.findall(r"[a-z0-9]+", document.page_content.lower()))
-        header_overlap = len(query_terms & header_terms)
+        subject_overlap = len(query_terms & subject_terms)
         body_overlap = len(query_terms & body_terms)
         vector_score = document.metadata.get("similarity_score")
         try:
             vector_score = float(vector_score)
         except (TypeError, ValueError):
             vector_score = float(position)
-        lexical_score = (header_overlap * 3) + body_overlap
-        scored_documents.append((lexical_score, header_overlap, body_overlap, -vector_score, -position, document))
+        lexical_score = (subject_overlap * 2) + body_overlap
+        scored_documents.append((lexical_score, body_overlap, subject_overlap, -vector_score, -position, document))
     scored_documents.sort(key=lambda item: item[:-1], reverse=True)
     return [document for *_, document in scored_documents[:limit]]
 
@@ -389,7 +385,10 @@ def retrieve_documents(
         )
 
     documents = _deduplicate_documents(documents)
-    documents = _rerank_documents(question, documents)
+    if os.getenv("RAG_RERANKING_MODE", "lexical").strip().lower() == "vector":
+        documents = documents[:10]
+    else:
+        documents = _rerank_documents(question, documents)
 
     if audit_logger is not None:
         audit_logger.emit(
