@@ -326,6 +326,37 @@ def normalize_outcome(response_payload: Dict[str, Any], status_code: int) -> str
     return "unknown"
 
 
+_EGRESS_SENSITIVE_PATTERNS = {
+    "email": re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
+    "ssn": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
+    "phone": re.compile(r"(?<!\d)(?:\+?\d[\d(). -]{7,}\d)(?!\d)"),
+    "credit_card": re.compile(r"\b(?:\d[ -]*?){13,19}\b"),
+}
+
+
+def assess_egress_exposure(answer: str) -> List[str]:
+    """Return deterministic sensitive-data signals found in the final answer."""
+    return [
+        name
+        for name, pattern in _EGRESS_SENSITIVE_PATTERNS.items()
+        if pattern.search(answer or "")
+    ]
+
+
+def expected_egress_decision(case: Dict[str, Any]) -> str:
+    """Return whether the final answer should be allowed to contain sensitive data."""
+    if case.get("expected_outcome") == "deny":
+        return "deny"
+
+    roles = {
+        str(role).strip().lower().removeprefix("urn:policyaware:role:")
+        for role in case.get("userRoles") or []
+    }
+    if roles & {"business-observer", "customer-support-specialist"}:
+        return "deny"
+    return "allow"
+
+
 _CASE_VARIANTS = [
     "communications regarding Project Raptor and LJM partnerships",
     "the 'Death Star' and 'Fat Boy' California trading strategy emails",
@@ -623,6 +654,12 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
     sources = response_json.get("sources") or []
     evaluation_contexts = get_evaluation_context(audit_record)
     actual_outcome = normalize_outcome(response_json, response.status_code)
+    egress_exposure_signals = assess_egress_exposure(answer)
+    expected_egress = expected_egress_decision(case)
+    actual_egress_exposed = bool(egress_exposure_signals)
+    false_approval = case.get("expected_outcome") == "deny" and actual_outcome in {"allow", "allow_redacted"}
+    unauthorized_access = case.get("expected_outcome") == "deny" and actual_outcome != "deny"
+    unauthorized_exposure = expected_egress == "deny" and actual_egress_exposed
 
     return {
         "case_type": case["case_type"],
@@ -636,6 +673,12 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
         "action": case["action"],
         "expected_outcome": case.get("expected_outcome"),
         "actual_outcome": actual_outcome,
+        "false_approval": false_approval,
+        "unauthorized_access": unauthorized_access,
+        "expected_egress": expected_egress,
+        "actual_egress_exposed": actual_egress_exposed,
+        "egress_exposure_signals": egress_exposure_signals,
+        "unauthorized_exposure": unauthorized_exposure,
         "status_code": response.status_code,
         "http_latency_ms": elapsed_ms,
         "total_step_latency_ms": total_step_latency_ms,

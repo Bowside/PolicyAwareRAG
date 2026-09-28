@@ -719,14 +719,14 @@ Protected answer:
     graph = StateGraph(RAGState)
     graph.add_node("retrieve", retrieve)
     graph.add_node("generate_answer", answer)
-    graph.add_node("policy_denied", policy_denied)
+    graph.add_node("policy_denied_terminal", policy_denied)
     graph.add_edge("retrieve", "generate_answer")
     graph.add_conditional_edges(
         "generate_answer",
         route_after_answer,
-        {"deliver": END, "deny": "policy_denied"},
+        {"deliver": END, "deny": "policy_denied_terminal"},
     )
-    graph.add_edge("policy_denied", END)
+    graph.add_edge("policy_denied_terminal", END)
     graph.set_entry_point("retrieve")
     return graph.compile()
 
