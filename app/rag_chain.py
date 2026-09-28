@@ -230,6 +230,32 @@ def _rerank_documents(question: str, documents: List[Document], limit: int = 10)
     return [document for *_, document in scored_documents[:limit]]
 
 
+def _merge_hybrid_results(
+    vector_results: List[Dict[str, Any]],
+    keyword_results: List[Dict[str, Any]],
+    rank_constant: int = 60,
+) -> List[Dict[str, Any]]:
+    """Fuse vector and keyword candidates using reciprocal rank fusion."""
+    merged: Dict[str, Dict[str, Any]] = {}
+    for result_set in (vector_results, keyword_results):
+        for rank, item in enumerate(result_set, start=1):
+            item_id = str(item.get("id") or item.get("parent_id") or "")
+            if not item_id:
+                continue
+            candidate = merged.setdefault(item_id, dict(item))
+            candidate["hybrid_score"] = candidate.get("hybrid_score", 0.0) + (
+                1.0 / (rank_constant + rank)
+            )
+            if item.get("similarity_score") is not None:
+                candidate["similarity_score"] = item["similarity_score"]
+
+    return sorted(
+        merged.values(),
+        key=lambda item: item.get("hybrid_score", 0.0),
+        reverse=True,
+    )
+
+
 def _format_context_document(document: Document) -> str:
     """Format one retrieved document with stable source metadata.
 
@@ -310,8 +336,10 @@ def retrieve_documents(
     query_vector = embed_query(question)
     allowed_roles = _normalize_roles(user_roles) or []
 
-    query = """
-        SELECT TOP 100
+    retrieval_mode = os.getenv("RAG_RETRIEVAL_MODE", "hybrid").strip().lower()
+    vector_candidate_limit = int(os.getenv("RAG_VECTOR_CANDIDATES", "200"))
+    query = f"""
+        SELECT TOP {vector_candidate_limit}
             c.id,
             c.subject,
             c["from"],
@@ -330,12 +358,59 @@ def retrieve_documents(
 
     start_time = perf_counter()
     try:
-        results = list(
+        vector_results = list(
             container.query_items(
                 query=query,
                 parameters=[{"name": "@embedding", "value": query_vector}],
                 enable_cross_partition_query=True,
             )
+        )
+        keyword_results: List[Dict[str, Any]] = []
+        if retrieval_mode == "hybrid":
+            keyword_terms = [
+                term
+                for term in re.findall(r"[a-z0-9]+", question.lower())
+                if len(term) > 2 and term not in {
+                    "about", "after", "against", "and", "are", "from", "into",
+                    "over", "review", "retrieve", "summarize", "summarise", "the",
+                    "this", "used", "what", "with", "within",
+                }
+            ][:8]
+            if keyword_terms:
+                keyword_predicates = " OR ".join(
+                    f"CONTAINS(c.subject, @term{index}, true) OR CONTAINS(c.body, @term{index}, true)"
+                    for index in range(len(keyword_terms))
+                )
+                keyword_query = f"""
+                    SELECT TOP {vector_candidate_limit}
+                        c.id,
+                        c.subject,
+                        c["from"],
+                        c.to,
+                        c.date,
+                        c.body,
+                        c.parent_id,
+                        c.chunk_id,
+                        c.chunk_index,
+                        c.chunk_count,
+                        c.securityMetadata
+                    FROM c
+                    WHERE {keyword_predicates}
+                """
+                keyword_results = list(
+                    container.query_items(
+                        query=keyword_query,
+                        parameters=[
+                            {"name": f"@term{index}", "value": term}
+                            for index, term in enumerate(keyword_terms)
+                        ],
+                        enable_cross_partition_query=True,
+                    )
+                )
+        results = (
+            _merge_hybrid_results(vector_results, keyword_results)
+            if retrieval_mode == "hybrid"
+            else vector_results
         )
     except Exception:
         if audit_logger is not None:
@@ -351,7 +426,7 @@ def retrieve_documents(
                 correlation_id=correlation_id,
                 user_id=user_id,
                 prompt_text=question,
-                reason="Cosmos vector retrieval failed.",
+                reason="Cosmos retrieval failed.",
                 finalize=True,
             )
         raise
@@ -405,6 +480,9 @@ def retrieve_documents(
                 "queryLength": len(question),
                 "latencyMs": round((perf_counter() - start_time) * 1000, 3),
                 "candidateDocumentCount": len(results),
+                "vectorCandidateCount": len(vector_results),
+                "keywordCandidateCount": len(keyword_results),
+                "retrievalMode": retrieval_mode,
                 "documentMatchCount": len(documents),
             },
             correlation_id=correlation_id,

@@ -16,6 +16,7 @@ from app.policy_guard import (
 )
 from app.rag_chain import (
     _deduplicate_documents,
+    _merge_hybrid_results,
     _rerank_documents,
     _format_context_document,
     build_rag_chain,
@@ -451,6 +452,22 @@ def test_rerank_documents_limits_context_and_prioritizes_query_overlap():
 
     assert len(ranked) == 1
     assert ranked[0].metadata["source"] == "second"
+
+
+def test_merge_hybrid_results_rewards_candidates_in_both_rankers():
+    """Ensure reciprocal-rank fusion prioritizes overlap across retrieval modes."""
+    merged = _merge_hybrid_results(
+        [
+            {"id": "vector-only"},
+            {"id": "overlap"},
+        ],
+        [
+            {"id": "overlap"},
+            {"id": "keyword-only"},
+        ],
+    )
+
+    assert [item["id"] for item in merged] == ["overlap", "vector-only", "keyword-only"]
 
 
 def test_rerank_documents_does_not_reward_sender_address_matches():
