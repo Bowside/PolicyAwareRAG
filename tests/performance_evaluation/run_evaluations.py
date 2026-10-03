@@ -14,6 +14,7 @@ import math
 import os
 import random
 import re
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -29,6 +30,23 @@ FUNCTION_APP_URL = os.getenv("FUNCTION_APP_URL", "http://localhost:7071/api/rag"
 FUNCTION_APP_KEY = os.getenv("FUNCTION_APP_KEY")
 RESULTS_DIR = Path(__file__).resolve().parent
 REFERENCE_ANSWERS_PATH = RESULTS_DIR / "reference_answers.json"
+_REQUEST_RATE_LOCK = threading.Lock()
+_NEXT_REQUEST_TIME = 0.0
+_REQUEST_INTERVAL_SECONDS = 0.0
+
+
+def wait_for_request_slot() -> None:
+    """Throttle evaluation requests globally across worker threads."""
+    global _NEXT_REQUEST_TIME
+    if _REQUEST_INTERVAL_SECONDS <= 0:
+        return
+
+    with _REQUEST_RATE_LOCK:
+        now = time.monotonic()
+        request_time = max(now, _NEXT_REQUEST_TIME)
+        _NEXT_REQUEST_TIME = request_time + _REQUEST_INTERVAL_SECONDS
+    if request_time > now:
+        time.sleep(request_time - now)
 
 
 def utc_now() -> str:
@@ -604,11 +622,13 @@ def select_cases(
     return selected_standard + selected_red_team
 
 
-def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
+def run_case(case: Dict[str, Any], enrich_from_cosmos: bool = True) -> Dict[str, Any]:
     """Execute one evaluation case against the configured Function App.
 
     Args:
         case: Evaluation request definition produced by ``build_cases``.
+        enrich_from_cosmos: Whether to fetch audit metrics and source context
+            from Cosmos DB after the HTTP request.
 
     Returns:
         A result record containing the original prompt, raw response text,
@@ -627,6 +647,7 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
     if FUNCTION_APP_KEY:
         headers["x-functions-key"] = FUNCTION_APP_KEY
 
+    wait_for_request_slot()
     start = time.perf_counter()
     response = requests.post(FUNCTION_APP_URL, json=payload, headers=headers, timeout=180)
     elapsed_ms = round((time.perf_counter() - start) * 1000)
@@ -643,7 +664,7 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
     correlation_id = response_json.get("correlationId")
     correlation_id_match = correlation_id == payload["correlationId"]
     user_query = case["question"]
-    audit_record = get_audit_record(correlation_id)
+    audit_record = get_audit_record(correlation_id) if enrich_from_cosmos else {}
     step_metrics = extract_step_metrics(audit_record, user_query)
     total_step_latency_ms = sum(step.get("latency_ms", 0) for step in step_metrics)
 
@@ -652,7 +673,7 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
     reference_answers = load_reference_answers()
     reference_answer = resolve_reference_answer(case, user_query, reference_answers)
     sources = response_json.get("sources") or []
-    evaluation_contexts = get_evaluation_context(audit_record)
+    evaluation_contexts = get_evaluation_context(audit_record) if enrich_from_cosmos else []
     actual_outcome = normalize_outcome(response_json, response.status_code)
     egress_exposure_signals = assess_egress_exposure(answer)
     expected_egress = expected_egress_decision(case)
@@ -705,9 +726,11 @@ def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
 
 def run_suite(
     cases: Optional[Iterable[Dict[str, Any]]] = None,
-    max_threads: int = 4,
+    max_threads: int = 2,
     max_tests: Optional[int] = None,
     seed: int = 42,
+    request_interval: float = 0.0,
+    enrich_from_cosmos: bool = True,
 ) -> List[Dict[str, Any]]:
     """Run a sampled evaluation suite concurrently and save its results.
 
@@ -716,6 +739,8 @@ def run_suite(
         max_threads: Maximum number of concurrent HTTP evaluations.
         max_tests: Maximum number of cases to sample across case types.
         seed: Random seed used for reproducible case sampling.
+        request_interval: Minimum seconds between request starts across workers.
+        enrich_from_cosmos: Whether to read audit records and source context after each request.
 
     Returns:
         Evaluation results in the selected case order.
@@ -727,10 +752,20 @@ def run_suite(
         cases = build_cases()
     if max_threads < 1:
         raise ValueError("max_threads must be at least 1")
+    if request_interval < 0:
+        raise ValueError("request_interval must be non-negative")
+    global _REQUEST_INTERVAL_SECONDS, _NEXT_REQUEST_TIME
+    _REQUEST_INTERVAL_SECONDS = request_interval
+    _NEXT_REQUEST_TIME = 0.0
     cases = select_cases(cases, max_tests=max_tests, seed=seed)
 
     with ThreadPoolExecutor(max_workers=max_threads) as executor:
-        results = list(executor.map(run_case, cases))
+        results = list(
+            executor.map(
+                lambda case: run_case(case, enrich_from_cosmos=enrich_from_cosmos),
+                cases,
+            )
+        )
     output_path = RESULTS_DIR / f"evaluation_results_{utc_now()}.json"
     output_path.write_text(json.dumps({"results": results}, indent=2), encoding='utf-8')
     print(f"Saved {len(results)} evaluations to {output_path}")
@@ -745,8 +780,8 @@ def main() -> None:
     parser.add_argument(
         "--max-threads",
         type=int,
-        default=4,
-        help="Maximum number of evaluations to run concurrently (default: 4).",
+        default=2,
+        help="Maximum number of evaluations to run concurrently (default: 2).",
     )
     parser.add_argument(
         "--max-tests",
@@ -760,6 +795,17 @@ def main() -> None:
         default=42,
         help="Seed used to make case sampling reproducible (default: 42).",
     )
+    parser.add_argument(
+        "--request-interval",
+        type=float,
+        default=1.0,
+        help="Minimum seconds between request starts across all workers (default: 1.0).",
+    )
+    parser.add_argument(
+        "--skip-cosmos-enrichment",
+        action="store_true",
+        help="Skip evaluator audit and source-context reads from Cosmos DB.",
+    )
     args = parser.parse_args()
 
     print(f"Using Function App endpoint: {FUNCTION_APP_URL}")
@@ -768,6 +814,8 @@ def main() -> None:
         max_threads=args.max_threads,
         max_tests=args.max_tests,
         seed=args.seed,
+        request_interval=args.request_interval,
+        enrich_from_cosmos=not args.skip_cosmos_enrichment,
     )
     pass_count = sum(1 for item in results if item["passed"])
     print(f"Pass rate: {pass_count}/{len(results)} ({(pass_count / len(results)):.2%})")

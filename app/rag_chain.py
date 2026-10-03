@@ -115,7 +115,16 @@ def get_embedding_model() -> SentenceTransformer:
 
 
 def _encode_embedding(text: str, query: bool) -> List[float]:
-    """Encode text using EmbeddingGemma's query or document instruction."""
+    """Encode text with the model instruction appropriate to its role.
+
+    Args:
+        text: Query or document text to embed.
+        query: Whether to use the model's query instruction; otherwise use its
+            document instruction.
+
+    Returns:
+        A normalized embedding vector as a list of floats.
+    """
     model = get_embedding_model()
     method_name = "encode_query" if query else "encode_document"
     encode_method = getattr(model, method_name, None)
@@ -235,7 +244,16 @@ def _merge_hybrid_results(
     keyword_results: List[Dict[str, Any]],
     rank_constant: int = 60,
 ) -> List[Dict[str, Any]]:
-    """Fuse vector and keyword candidates using reciprocal rank fusion."""
+    """Fuse vector and keyword candidates using reciprocal rank fusion.
+
+    Args:
+        vector_results: Candidates ordered by vector similarity.
+        keyword_results: Candidates ordered by keyword relevance.
+        rank_constant: Smoothing constant used in each reciprocal-rank score.
+
+    Returns:
+        Unique candidates ordered by their combined hybrid score.
+    """
     merged: Dict[str, Dict[str, Any]] = {}
     for result_set in (vector_results, keyword_results):
         for rank, item in enumerate(result_set, start=1):
@@ -278,7 +296,14 @@ def _format_context_document(document: Document) -> str:
 
 
 def _deduplicate_documents(documents: List[Document]) -> List[Document]:
-    """Remove repeated document bodies while preserving retrieval order."""
+    """Remove repeated document bodies while preserving retrieval order.
+
+    Args:
+        documents: Documents in their current retrieval or ranking order.
+
+    Returns:
+        Documents with duplicate normalized bodies removed.
+    """
     unique_documents: List[Document] = []
     seen_content = set()
     for document in documents:
@@ -433,8 +458,8 @@ def retrieve_documents(
 
     documents: List[Document] = []
     for item in results:
-        # The role filter is applied in Python because Cosmos rejects the nested
-        # policy array predicate more reliably than the direct vector query.
+        # Apply role filtering after retrieval for Cosmos compatibility: nested
+        # policy-array predicates are unreliable in the vector query shape.
         metadata = item.get("securityMetadata") or {}
         allowed_roles_for_item = metadata.get("policyRole") or []
         if isinstance(allowed_roles_for_item, str):
@@ -531,7 +556,7 @@ def build_rag_graph(audit_logger: AuditLogger | None = None):
 
     prompt = ChatPromptTemplate.from_template(
         """
-You are a careful evidence-grounded assistant analyzing the Enron email corpus.
+You are a careful evidence-grounded assistant analysing the Enron email corpus.
 
 Use only facts directly supported by the retrieved context. For every factual
 claim, cite the supporting source ID in square brackets. Do not infer names,
@@ -787,11 +812,25 @@ Protected answer:
         return state
 
     def policy_denied(state: RAGState) -> RAGState:
-        """Terminate generation after a semantic policy denial."""
+        """Pass denied state to the terminal graph node without modification.
+
+        Args:
+            state: Current graph state containing the denial metadata.
+
+        Returns:
+            The unchanged denied state.
+        """
         return state
 
     def route_after_answer(state: RAGState) -> str:
-        """Route denied answers to the terminal denial node."""
+        """Choose the terminal route after answer and policy review.
+
+        Args:
+            state: Graph state containing the semantic review decision.
+
+        Returns:
+            ``"deny"`` when review failed; otherwise ``"deliver"``.
+        """
         return "deny" if state.get("policy_denied", False) else "deliver"
 
     graph = StateGraph(RAGState)
@@ -811,6 +850,9 @@ Protected answer:
 
 def build_rag_chain(audit_logger: AuditLogger | None = None):
     """Create and return the compiled RAG graph for execution.
+
+    Args:
+        audit_logger: Optional request-scoped logger shared by graph nodes.
 
     Returns:
         The compiled LangGraph pipeline instance.
