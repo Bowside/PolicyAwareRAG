@@ -16,11 +16,13 @@ from app.policy_guard import (
 )
 from app.rag_chain import (
     _deduplicate_documents,
+    _merge_hybrid_results,
     _rerank_documents,
     _format_context_document,
     build_rag_chain,
     build_vector_store,
     get_cosmos_settings,
+    get_embedding_model,
     get_foundry_settings,
     retrieve_documents,
 )
@@ -52,6 +54,23 @@ def test_get_foundry_settings_uses_environment_values(monkeypatch):
     assert settings["chat_model"] == "gpt-4o-mini"
     assert settings["embedding_model"] == "text-embedding-3-small"
     assert settings["temperature"] == 0.25
+
+
+@patch("app.rag_chain.SentenceTransformer")
+def test_get_embedding_model_passes_huggingface_token(mock_sentence_transformer, monkeypatch):
+    """Ensure private Hugging Face embedding models receive the configured token."""
+    import app.rag_chain as rag_chain
+
+    monkeypatch.setenv("LOCAL_EMBEDDING_MODEL", "google/embeddinggemma-300m")
+    monkeypatch.setenv("HUGGINGFACE_TOKEN", "test-huggingface-token")
+    monkeypatch.setattr(rag_chain, "_EMBEDDING_MODEL", None)
+
+    get_embedding_model()
+
+    mock_sentence_transformer.assert_called_once_with(
+        "google/embeddinggemma-300m",
+        token="test-huggingface-token",
+    )
 
 
 def test_extract_step_metrics_preserves_named_audit_steps():
@@ -169,7 +188,7 @@ def test_get_cosmos_settings_uses_environment_values(monkeypatch):
     monkeypatch.setenv("COSMOSDB_KEY", "test-cosmos-key")
     monkeypatch.setenv("COSMOSDB_DATABASE", "policy_rag_db")
     monkeypatch.setenv("COSMOSDB_COLLECTION", "EnronEmailVectorStore")
-    monkeypatch.setenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    monkeypatch.setenv("EMBEDDING_MODEL", "google/embeddinggemma-300m")
 
     settings = get_cosmos_settings()
 
@@ -177,7 +196,7 @@ def test_get_cosmos_settings_uses_environment_values(monkeypatch):
     assert settings["key"] == "test-cosmos-key"
     assert settings["database"] == "policy_rag_db"
     assert settings["container"] == "EnronEmailVectorStore"
-    assert settings["embedding_model"] == "all-MiniLM-L6-v2"
+    assert settings["embedding_model"] == "google/embeddinggemma-300m"
 
 
 @patch("app.rag_chain.get_cosmos_container")
@@ -231,8 +250,11 @@ def test_build_rag_chain_instantiates_graph_components(
     assert "no personal" not in prompt_text
     assert "context is insufficient" in prompt_text.replace("\n", " ")
     assert "cite the supporting source ID" in prompt_text
+    assert "The requested action is {action}" in prompt_text
+    assert "complete retrieved email content" in prompt_text
     mock_graph.add_node.assert_called()
     mock_graph.add_edge.assert_called()
+    mock_graph.add_conditional_edges.assert_called_once()
     mock_graph.set_entry_point.assert_called_once_with("retrieve")
     assert result is mock_compiled
 
@@ -257,6 +279,17 @@ def test_redact_response_masks_email_for_limited_role():
 
     assert "example.com" not in redacted
     assert "[REDACTED_EMAIL]" in redacted
+
+
+def test_redact_response_masks_phone_for_limited_role():
+    """Ensure limited roles receive deterministic telephone redaction."""
+    redacted = redact_response_for_role(
+        "Call Jane at +1 (212) 555-0123 for approval.",
+        "business-observer",
+    )
+
+    assert "555-0123" not in redacted
+    assert "[REDACTED_PHONE]" in redacted
 
 
 def test_load_odrl_policies_includes_expected_roles_and_permissions():
@@ -366,9 +399,19 @@ def test_retrieve_documents_filters_by_security_metadata(mock_embed_query, mock_
     mock_get_cosmos_container.return_value.query_items.return_value = [
         {
             "id": "allowed",
+            "parent_id": "email-allowed",
+            "chunk_id": "email-allowed_chunk_0",
+            "chunk_index": 0,
+            "chunk_count": 1,
             "subject": "Allowed",
             "body": "Allowed body",
-            "securityMetadata": {"policyRole": ["privacy-compliance-analyst"]},
+            "securityMetadata": {
+                "policyRole": ["privacy-compliance-analyst"],
+                "sensitivityTier": "sensitive",
+                "labelingMethod": "keyword_and_pii_rules_v1",
+                "labelEvidence": ["category:legal"],
+                "piiMatchCount": 0,
+            },
         },
         {
             "id": "blocked",
@@ -390,7 +433,10 @@ def test_retrieve_documents_filters_by_security_metadata(mock_embed_query, mock_
         action="retrieve",
     )
 
-    assert [doc.metadata["source"] for doc in docs] == ["allowed", "no-metadata"]
+    assert [doc.metadata["source"] for doc in docs] == ["email-allowed"]
+    assert docs[0].metadata["chunk_id"] == "email-allowed_chunk_0"
+    assert docs[0].metadata["chunk_count"] == 1
+    assert docs[0].metadata["securityMetadata"]["sensitivityTier"] == "sensitive"
 
 
 def test_rerank_documents_limits_context_and_prioritizes_query_overlap():
@@ -406,6 +452,42 @@ def test_rerank_documents_limits_context_and_prioritizes_query_overlap():
 
     assert len(ranked) == 1
     assert ranked[0].metadata["source"] == "second"
+
+
+def test_merge_hybrid_results_rewards_candidates_in_both_rankers():
+    """Ensure reciprocal-rank fusion prioritizes overlap across retrieval modes."""
+    merged = _merge_hybrid_results(
+        [
+            {"id": "vector-only"},
+            {"id": "overlap"},
+        ],
+        [
+            {"id": "overlap"},
+            {"id": "keyword-only"},
+        ],
+    )
+
+    assert [item["id"] for item in merged] == ["overlap", "vector-only", "keyword-only"]
+
+
+def test_rerank_documents_does_not_reward_sender_address_matches():
+    """Ensure sender terms do not outrank evidence in the message body."""
+    from langchain_core.documents import Document
+
+    documents = [
+        Document(
+            page_content="Routine archive notice",
+            metadata={"subject": "Routine notice", "from": "security-review@example.com", "source": "sender"},
+        ),
+        Document(
+            page_content="Detailed security review findings and controls",
+            metadata={"subject": "Review", "from": "analyst@example.com", "source": "body"},
+        ),
+    ]
+
+    ranked = _rerank_documents("security review", documents, limit=2)
+
+    assert [document.metadata["source"] for document in ranked] == ["body", "sender"]
 
 
 def test_deduplicate_documents_collapses_repeated_email_bodies():

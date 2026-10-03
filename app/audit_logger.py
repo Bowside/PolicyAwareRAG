@@ -79,10 +79,13 @@ class AuditLogger:
         self._pending_steps: dict[str, list[dict[str, Any]]] = {}
 
     def _get_container(self):
-        """Return the configured AuditStorage container if Cosmos is configured.
+        """Return the configured audit container when Cosmos DB is available.
 
         Returns:
             The Cosmos container client, or ``None`` when configuration is absent.
+
+        The client is created lazily so local development and unit tests can use
+        the application without requiring audit-storage credentials.
         """
         if self._container is not None:
             return self._container

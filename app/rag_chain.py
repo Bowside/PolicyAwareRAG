@@ -34,7 +34,6 @@ load_dotenv()
 
 _EMBEDDING_MODEL = None
 
-
 def _estimate_tokens(value: Any) -> int:
     """Estimate tokens from text using the evaluation harness heuristic.
 
@@ -63,6 +62,8 @@ class RAGState(TypedDict):
     action: str
     correlation_id: str
     user_id: str
+    policy_denied: bool
+    policy_denial_reason: str
 
 
 def get_foundry_settings() -> Dict[str, Any]:
@@ -75,9 +76,9 @@ def get_foundry_settings() -> Dict[str, Any]:
     return {
         "endpoint": os.getenv("FOUNDRY_ENDPOINT"),
         "api_key": os.getenv("FOUNDRY_API_KEY"),
-        "chat_model": os.getenv("FOUNDRY_CHAT_MODEL", "gpt-4o-mini"),
-        "embedding_model": os.getenv("FOUNDRY_EMBEDDING_MODEL", "text-embedding-3-small"),
-        "temperature": float(os.getenv("FOUNDRY_TEMPERATURE", "1.0")),
+        "chat_model": os.getenv("FOUNDRY_CHAT_MODEL"),
+        "embedding_model": os.getenv("LOCAL_EMBEDDING_MODEL", "FOUNDRY_EMBEDDING_MODEL"),
+        "temperature": float(os.getenv("FOUNDRY_TEMPERATURE", "0.3")),
     }
 
 
@@ -93,7 +94,7 @@ def get_cosmos_settings() -> Dict[str, str]:
         "key": os.getenv("COSMOSDB_KEY"),
         "database": os.getenv("COSMOSDB_DATABASE"),
         "container": os.getenv("COSMOSDB_COLLECTION"),
-        "embedding_model": os.getenv("EMBEDDING_MODEL"),
+        "embedding_model": os.getenv("LOCAL_EMBEDDING_MODEL", "FOUNDRY_EMBEDDING_MODEL"),
     }
 
 
@@ -105,8 +106,37 @@ def get_embedding_model() -> SentenceTransformer:
     """
     global _EMBEDDING_MODEL
     if _EMBEDDING_MODEL is None:
-        _EMBEDDING_MODEL = SentenceTransformer(get_cosmos_settings()["embedding_model"])
+        huggingface_token = os.getenv("HUGGINGFACE_TOKEN")
+        _EMBEDDING_MODEL = SentenceTransformer(
+            get_cosmos_settings()["embedding_model"],
+            token=huggingface_token,
+        )
     return _EMBEDDING_MODEL
+
+
+def _encode_embedding(text: str, query: bool) -> List[float]:
+    """Encode text with the model instruction appropriate to its role.
+
+    Args:
+        text: Query or document text to embed.
+        query: Whether to use the model's query instruction; otherwise use its
+            document instruction.
+
+    Returns:
+        A normalized embedding vector as a list of floats.
+    """
+    model = get_embedding_model()
+    method_name = "encode_query" if query else "encode_document"
+    encode_method = getattr(model, method_name, None)
+    if callable(encode_method):
+        embedding = encode_method(text, normalize_embeddings=True)
+    else:
+        embedding = model.encode(
+            text,
+            prompt_name="query" if query else "document",
+            normalize_embeddings=True,
+        )
+    return embedding.tolist()
 
 
 def build_vector_store():
@@ -150,7 +180,7 @@ def embed_query(question: str) -> List[float]:
     Returns:
         The normalized embedding vector for the query.
     """
-    return get_embedding_model().encode(question, normalize_embeddings=True).tolist()
+    return _encode_embedding(question, query=True)
 
 
 def _normalize_roles(user_roles: Sequence[str] | None) -> List[str]:
@@ -172,7 +202,7 @@ def _normalize_roles(user_roles: Sequence[str] | None) -> List[str]:
 
 
 def _rerank_documents(question: str, documents: List[Document], limit: int = 10) -> List[Document]:
-    """Rerank vector results using distinctive query terms and document headers.
+    """Rerank vector results using body and subject lexical overlap.
 
     Args:
         question: User query used to identify salient terms.
@@ -194,23 +224,54 @@ def _rerank_documents(question: str, documents: List[Document], limit: int = 10)
     }
     scored_documents = []
     for position, document in enumerate(documents):
-        header_text = " ".join(
-            str(document.metadata.get(field) or "")
-            for field in ("subject", "from")
-        )
-        header_terms = set(re.findall(r"[a-z0-9]+", header_text.lower()))
+        subject_terms = set(re.findall(r"[a-z0-9]+", str(document.metadata.get("subject") or "").lower()))
         body_terms = set(re.findall(r"[a-z0-9]+", document.page_content.lower()))
-        header_overlap = len(query_terms & header_terms)
+        subject_overlap = len(query_terms & subject_terms)
         body_overlap = len(query_terms & body_terms)
         vector_score = document.metadata.get("similarity_score")
         try:
             vector_score = float(vector_score)
         except (TypeError, ValueError):
             vector_score = float(position)
-        lexical_score = (header_overlap * 3) + body_overlap
-        scored_documents.append((lexical_score, header_overlap, body_overlap, -vector_score, -position, document))
+        lexical_score = (subject_overlap * 2) + body_overlap
+        scored_documents.append((lexical_score, body_overlap, subject_overlap, -vector_score, -position, document))
     scored_documents.sort(key=lambda item: item[:-1], reverse=True)
     return [document for *_, document in scored_documents[:limit]]
+
+
+def _merge_hybrid_results(
+    vector_results: List[Dict[str, Any]],
+    keyword_results: List[Dict[str, Any]],
+    rank_constant: int = 60,
+) -> List[Dict[str, Any]]:
+    """Fuse vector and keyword candidates using reciprocal rank fusion.
+
+    Args:
+        vector_results: Candidates ordered by vector similarity.
+        keyword_results: Candidates ordered by keyword relevance.
+        rank_constant: Smoothing constant used in each reciprocal-rank score.
+
+    Returns:
+        Unique candidates ordered by their combined hybrid score.
+    """
+    merged: Dict[str, Dict[str, Any]] = {}
+    for result_set in (vector_results, keyword_results):
+        for rank, item in enumerate(result_set, start=1):
+            item_id = str(item.get("id") or item.get("parent_id") or "")
+            if not item_id:
+                continue
+            candidate = merged.setdefault(item_id, dict(item))
+            candidate["hybrid_score"] = candidate.get("hybrid_score", 0.0) + (
+                1.0 / (rank_constant + rank)
+            )
+            if item.get("similarity_score") is not None:
+                candidate["similarity_score"] = item["similarity_score"]
+
+    return sorted(
+        merged.values(),
+        key=lambda item: item.get("hybrid_score", 0.0),
+        reverse=True,
+    )
 
 
 def _format_context_document(document: Document) -> str:
@@ -235,7 +296,14 @@ def _format_context_document(document: Document) -> str:
 
 
 def _deduplicate_documents(documents: List[Document]) -> List[Document]:
-    """Remove repeated document bodies while preserving retrieval order."""
+    """Remove repeated document bodies while preserving retrieval order.
+
+    Args:
+        documents: Documents in their current retrieval or ranking order.
+
+    Returns:
+        Documents with duplicate normalized bodies removed.
+    """
     unique_documents: List[Document] = []
     seen_content = set()
     for document in documents:
@@ -283,7 +351,8 @@ def retrieve_documents(
     Cosmos DB can reject complex nested-array predicates in some vector-query shapes,
     so we intentionally keep the query broad and apply the role enforcement in Python
     after retrieval. This preserves compatibility while still enforcing the document
-    security metadata contract. Records with no `securityMetadata` remain eligible.
+    security metadata contract. When caller roles are supplied, records without
+    an explicit security label are excluded rather than treated as public.
     """
     if user_roles is not None:
         evaluate_intent_against_odrl(question, user_roles, purpose=purpose, action=action)
@@ -292,14 +361,20 @@ def retrieve_documents(
     query_vector = embed_query(question)
     allowed_roles = _normalize_roles(user_roles) or []
 
-    query = """
-        SELECT TOP 100
+    retrieval_mode = os.getenv("RAG_RETRIEVAL_MODE", "hybrid").strip().lower()
+    vector_candidate_limit = int(os.getenv("RAG_VECTOR_CANDIDATES", "200"))
+    query = f"""
+        SELECT TOP {vector_candidate_limit}
             c.id,
             c.subject,
             c["from"],
             c.to,
             c.date,
             c.body,
+            c.parent_id,
+            c.chunk_id,
+            c.chunk_index,
+            c.chunk_count,
             c.securityMetadata,
             VectorDistance(c.vector, @embedding) AS similarity_score
         FROM c
@@ -308,12 +383,59 @@ def retrieve_documents(
 
     start_time = perf_counter()
     try:
-        results = list(
+        vector_results = list(
             container.query_items(
                 query=query,
                 parameters=[{"name": "@embedding", "value": query_vector}],
                 enable_cross_partition_query=True,
             )
+        )
+        keyword_results: List[Dict[str, Any]] = []
+        if retrieval_mode == "hybrid":
+            keyword_terms = [
+                term
+                for term in re.findall(r"[a-z0-9]+", question.lower())
+                if len(term) > 2 and term not in {
+                    "about", "after", "against", "and", "are", "from", "into",
+                    "over", "review", "retrieve", "summarize", "summarise", "the",
+                    "this", "used", "what", "with", "within",
+                }
+            ][:8]
+            if keyword_terms:
+                keyword_predicates = " OR ".join(
+                    f"CONTAINS(c.subject, @term{index}, true) OR CONTAINS(c.body, @term{index}, true)"
+                    for index in range(len(keyword_terms))
+                )
+                keyword_query = f"""
+                    SELECT TOP {vector_candidate_limit}
+                        c.id,
+                        c.subject,
+                        c["from"],
+                        c.to,
+                        c.date,
+                        c.body,
+                        c.parent_id,
+                        c.chunk_id,
+                        c.chunk_index,
+                        c.chunk_count,
+                        c.securityMetadata
+                    FROM c
+                    WHERE {keyword_predicates}
+                """
+                keyword_results = list(
+                    container.query_items(
+                        query=keyword_query,
+                        parameters=[
+                            {"name": f"@term{index}", "value": term}
+                            for index, term in enumerate(keyword_terms)
+                        ],
+                        enable_cross_partition_query=True,
+                    )
+                )
+        results = (
+            _merge_hybrid_results(vector_results, keyword_results)
+            if retrieval_mode == "hybrid"
+            else vector_results
         )
     except Exception:
         if audit_logger is not None:
@@ -329,30 +451,35 @@ def retrieve_documents(
                 correlation_id=correlation_id,
                 user_id=user_id,
                 prompt_text=question,
-                reason="Cosmos vector retrieval failed.",
+                reason="Cosmos retrieval failed.",
                 finalize=True,
             )
         raise
 
     documents: List[Document] = []
     for item in results:
-        # The role filter is applied in Python because Cosmos rejects the nested
-        # policy array predicate more reliably than the direct vector query.
+        # Apply role filtering after retrieval for Cosmos compatibility: nested
+        # policy-array predicates are unreliable in the vector query shape.
         metadata = item.get("securityMetadata") or {}
         allowed_roles_for_item = metadata.get("policyRole") or []
         if isinstance(allowed_roles_for_item, str):
             allowed_roles_for_item = [allowed_roles_for_item]
         doc_roles = [str(role).lower() for role in allowed_roles_for_item]
-        if allowed_roles and doc_roles and not any(role.lower() in doc_roles for role in [r.lower() for r in allowed_roles]):
-            continue
+        if allowed_roles:
+            if not doc_roles or not any(role.lower() in doc_roles for role in allowed_roles):
+                continue
         documents.append(
             Document(
                 page_content=item.get("body") or item.get("subject") or "",
                 metadata={
-                    "source": item.get("id") or item.get("subject") or "enron-email",
+                    "source": item.get("parent_id") or item.get("id") or item.get("subject") or "enron-email",
                     "subject": item.get("subject"),
                     "from": item.get("from"),
                     "date": item.get("date"),
+                    "chunk_id": item.get("chunk_id"),
+                    "chunk_index": item.get("chunk_index"),
+                    "chunk_count": item.get("chunk_count"),
+                    "parent_id": item.get("parent_id") or item.get("id"),
                     "similarity_score": item.get("similarity_score"),
                     "securityMetadata": metadata,
                 },
@@ -360,7 +487,10 @@ def retrieve_documents(
         )
 
     documents = _deduplicate_documents(documents)
-    documents = _rerank_documents(question, documents)
+    if os.getenv("RAG_RERANKING_MODE", "lexical").strip().lower() == "vector":
+        documents = documents[:10]
+    else:
+        documents = _rerank_documents(question, documents)
 
     if audit_logger is not None:
         audit_logger.emit(
@@ -375,6 +505,9 @@ def retrieve_documents(
                 "queryLength": len(question),
                 "latencyMs": round((perf_counter() - start_time) * 1000, 3),
                 "candidateDocumentCount": len(results),
+                "vectorCandidateCount": len(vector_results),
+                "keywordCandidateCount": len(keyword_results),
+                "retrievalMode": retrieval_mode,
                 "documentMatchCount": len(documents),
             },
             correlation_id=correlation_id,
@@ -423,16 +556,20 @@ def build_rag_graph(audit_logger: AuditLogger | None = None):
 
     prompt = ChatPromptTemplate.from_template(
         """
-You are a careful evidence-grounded assistant analyzing the Enron email corpus.
+You are a careful evidence-grounded assistant analysing the Enron email corpus.
 
 Use only facts directly supported by the retrieved context. For every factual
 claim, cite the supporting source ID in square brackets. Do not infer names,
-dates, causes, or relationships that are not stated in the context. If the provided 
-context does not contain enough information to answer the question, respond with 
+dates, causes, or relationships that are not stated in the context. If context is insufficient
+to answer the question, respond with 
 exactly: 'Insufficient information in the provided context.'. Treat email headers
 (From, To, Date, Subject) as factual context. Do not assume nicknames, aliases,
 or full names unless explicitly mapped in the text. Prefer a
-short, qualified answer over unsupported detail.
+short, qualified answer over unsupported detail. The requested action is {action}.
+For an export action, return the complete retrieved email content, including its
+headers and body, without summarizing or omitting supported details. Keep each
+exported email separated and include its source ID. Only perform export when the
+caller has already passed policy authorization.
 
 Context: {context}
 
@@ -488,6 +625,7 @@ Return a concise answer with the relevant supported findings and source IDs.
         answer = chain.invoke({
             "question": state["question"],
             "context": "\n\n".join(state["context"]),
+            "action": state.get("action") or "retrieve",
         })
         request_audit_logger = audit_logger or AuditLogger()
         request_audit_logger.emit(
@@ -552,6 +690,8 @@ Return a concise answer with the relevant supported findings and source IDs.
             protected_answer.strip() != "Insufficient information in the provided context."
         )
         reviewed_answer = protected_answer
+        policy_denied = False
+        policy_denial_reason = ""
         if semantic_review_required:
             semantic_review_start = perf_counter()
             semantic_review_prompt = ChatPromptTemplate.from_template(
@@ -631,7 +771,12 @@ Protected answer:
             if spokesperson_role != "business-observer":
                 reviewed_answer = protected_answer
             semantic_review_latency = round((perf_counter() - semantic_review_start) * 1000, 3)
-            review_status = "ALLOWED" if review_error is None and reviewed_answer else "DENIED"
+            policy_denied = review_error is not None or decision != "ALLOW" or not reviewed_answer
+            policy_denial_reason = str(
+                review_result.get("reason")
+                or (review_error or "Semantic policy review denied the response.")
+            )
+            review_status = "DENIED" if policy_denied else "ALLOWED"
             request_audit_logger.emit(
                 step_name="SemanticPolicyReview",
                 execution_status=review_status,
@@ -658,30 +803,56 @@ Protected answer:
                 reason=str(review_result.get("reason") or "Semantic policy review completed."),
                 finalize=False,
             )
-            if review_error is not None and spokesperson_role == "business-observer":
-                raise review_error
-            if spokesperson_role == "business-observer" and not reviewed_answer:
-                raise PolicyViolationError(
-                    "Policy denial: spokesperson returned no sanitized answer."
-                )
-            # Deterministic authorization remains authoritative. For roles other
-            # than business-observer, the semantic model cannot turn an answer-
-            # quality concern into a policy denial.
+            if policy_denied:
+                reviewed_answer = ""
         state["answer"] = reviewed_answer
         state["base_answer"] = answer
+        state["policy_denied"] = policy_denied
+        state["policy_denial_reason"] = policy_denial_reason
         return state
+
+    def policy_denied(state: RAGState) -> RAGState:
+        """Pass denied state to the terminal graph node without modification.
+
+        Args:
+            state: Current graph state containing the denial metadata.
+
+        Returns:
+            The unchanged denied state.
+        """
+        return state
+
+    def route_after_answer(state: RAGState) -> str:
+        """Choose the terminal route after answer and policy review.
+
+        Args:
+            state: Graph state containing the semantic review decision.
+
+        Returns:
+            ``"deny"`` when review failed; otherwise ``"deliver"``.
+        """
+        return "deny" if state.get("policy_denied", False) else "deliver"
 
     graph = StateGraph(RAGState)
     graph.add_node("retrieve", retrieve)
     graph.add_node("generate_answer", answer)
+    graph.add_node("policy_denied_terminal", policy_denied)
     graph.add_edge("retrieve", "generate_answer")
-    graph.add_edge("generate_answer", END)
+    graph.add_conditional_edges(
+        "generate_answer",
+        route_after_answer,
+        {"deliver": END, "deny": "policy_denied_terminal"},
+    )
+    graph.add_edge("policy_denied_terminal", END)
     graph.set_entry_point("retrieve")
     return graph.compile()
 
 
 def build_rag_chain(audit_logger: AuditLogger | None = None):
     """Create and return the compiled RAG graph for execution.
+
+    Args:
+        audit_logger: Optional request-scoped logger shared by graph nodes.
 
     Returns:
         The compiled LangGraph pipeline instance.

@@ -1,29 +1,33 @@
-# Performance Evaluations
+# Performance evaluations
 
-`run_evaluations.py` sends the defined evaluation cases to the live PolicyAwareRAG Function App and writes a JSON result file containing outcomes, latency, token estimates, resolved evaluation context, audit-step metrics, and optional RAGAS scores.
-
-The application retrieves up to 20 vector candidates, applies policy filtering, reranks them by query-term overlap, and sends at most 8 documents to generation. The answer prompt uses source-labeled evidence and requires citations for factual claims.
+This folder contains the evaluation runner, result files, reference answers,
+figures, and analysis notebook.
 
 ## Prerequisites
 
-From the repository root, create or activate the virtual environment and install the project dependencies:
+From the repository root, activate the virtual environment and install the
+project dependencies:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 ```
 
-Create or update the root `.env` file with the evaluation target:
+Create or update the root `.env` file with the Function App target:
 
 ```env
 FUNCTION_APP_URL=https://<your-function-app>.azurewebsites.net/api/rag
 FUNCTION_APP_KEY=<your-function-app-key>
 
-# Set this on the Function App and evaluator for base-versus-final RAGAS scores.
+# Optional: return the pre-guardrail answer for evaluation details.
 ENABLE_EVALUATION_DETAILS=true
 ```
 
-`ENABLE_EVALUATION_DETAILS` is optional and should be enabled only for controlled evaluation runs. When enabled, requests that explicitly include evaluation details return the pre-guardrail answer in addition to the final guarded answer. Normal API responses remain unchanged when it is disabled.
+`ENABLE_EVALUATION_DETAILS` is optional. It must be enabled on the Function App
+and in the evaluator when base and final answers are both required.
+
+The deployed Function App must also have `LOCAL_EMBEDDING_MODEL` and
+`HUGGINGFACE_TOKEN` configured. Do not commit the token to the repository.
 
 To retrieve audit records and per-step metrics, also set:
 
@@ -34,7 +38,9 @@ COSMOSDB_DATABASE=policy_rag_db
 COSMOSDB_AUDIT_CONTAINER=AuditStorage
 ```
 
-The evaluator also uses `COSMOSDB_ENDPOINT`, `COSMOSDB_KEY`, `COSMOSDB_DATABASE`, and `COSMOSDB_COLLECTION` to resolve audited source IDs to document bodies. RAGAS is evaluated against those document bodies, not source IDs.
+The evaluator also uses `COSMOSDB_ENDPOINT`, `COSMOSDB_KEY`,
+`COSMOSDB_DATABASE`, and `COSMOSDB_COLLECTION` to resolve audited source IDs to
+document bodies.
 
 The `.env` file is ignored by Git and must not be committed.
 
@@ -44,7 +50,8 @@ The `.env` file is ignored by Git and must not be committed.
 python tests/performance_evaluation/run_evaluations.py
 ```
 
-By default, all 120 evaluation cases run with a maximum of 4 concurrent threads.
+By default, all evaluation cases run with two concurrent threads and a
+one-second interval between request starts.
 
 ## Control threads and test count
 
@@ -55,8 +62,10 @@ specific number of cases across the policy case types:
 python tests/performance_evaluation/run_evaluations.py --max-threads 8 --max-tests 25
 ```
 
-In this example, 25 cases are sampled across the 12 case types and run with at
-most 8 concurrent workers. Both values must be at least 1. If `--max-tests` is
+In this example, 25 cases are sampled across the standard case types and run
+with at most 8 concurrent workers. Both values must be at least 1. When
+`--max-tests` is supplied, the sample reserves `ceil(max-tests * 0.10)` cases
+for the red-team suite, with at least one red-team case. If `--max-tests` is
 omitted, all cases run.
 
 Use `--seed` to reproduce the same sample later:
@@ -65,8 +74,18 @@ Use `--seed` to reproduce the same sample later:
 python tests/performance_evaluation/run_evaluations.py --max-tests 25 --seed 42
 ```
 
-Each case type has 10 variants covering the ODRL roles and purposes for
-observer, support, privacy, administrator, and prohibited-export scenarios.
+To protect a low-throughput Cosmos account, reduce concurrency and pace request
+starts. The evaluator defaults to a one-second interval between requests. For a
+run that measures response behavior without the evaluator's extra audit and
+source-context reads, also use `--skip-cosmos-enrichment`:
+
+```powershell
+python tests/performance_evaluation/run_evaluations.py --max-threads 2 --max-tests 25 --request-interval 2 --skip-cosmos-enrichment
+```
+
+The Function App still performs its normal vector retrieval and audit write for
+each request. To reduce retrieval RU further, set `RAG_RETRIEVAL_MODE=vector`
+and lower `RAG_VECTOR_CANDIDATES` on the Function App for the evaluation window.
 
 You can view all options with:
 
@@ -74,7 +93,7 @@ You can view all options with:
 python tests/performance_evaluation/run_evaluations.py --help
 ```
 
-## Results
+## Output
 
 Results are saved beside the script as:
 
@@ -84,21 +103,10 @@ tests/performance_evaluation/evaluation_results_<timestamp>.json
 
 The console reports the output path and the pass rate after the run completes. Evaluation result files are ignored by Git.
 
-Each result includes human-review fields at the top level:
-
-- `original_prompt`: the exact prompt sent to the Function App.
-- `request_payload`: the complete JSON request, including role, purpose, and action.
-- `response_text`: the raw response body returned by the Function App.
-- `response`: the parsed JSON response when the body is valid JSON.
-- `evaluation_contexts`: the retrieved document bodies used as RAGAS contexts when audit records are available.
-- `base_answer`: the pre-guardrail answer when evaluation details are enabled; otherwise it equals the final answer.
-- `reference`: an optional human-curated reference answer.
-- `step_metrics`: named timing and token metrics for `IntentValidation`, `ContextRetrieval`, `BaseRAG`, `SpokespersonValidation`, `SemanticPolicyReview` (when a purpose-gated policy applies), and `OutputRedaction`.
-
-Token fields are estimated with a four-characters-per-token heuristic. Answer tokens are split by processing stage in `step_metrics`; `spokesperson_tokens` estimates the deterministic spokesperson input and output text, while `prompt_tokens`, `completion_tokens`, and `total_tokens` estimate the secondary semantic-review LLM call. These are estimates, not provider billing counts.
-
-This makes it possible to review the original prompt beside the generated answer
-or error response without reconstructing the request from the metadata.
+Each result includes the request, response, outcome, latency, token, and audit
+fields. When Cosmos enrichment is enabled, it also includes retrieved document
+context and named pipeline-step metrics. Token counts are estimates based on
+four characters per token, not provider billing values.
 
 ## Human-curated references
 
@@ -116,7 +124,7 @@ Example:
 }
 ```
 
-Do not use model-generated answers as references. Reference answers should be reviewed against the source documents before being used in an academic evaluation.
+Do not use model-generated answers as references.
 
 ## Analysis notebook
 
