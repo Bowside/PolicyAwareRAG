@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 
 
-RESULTS_PATH = Path(__file__).resolve().parents[1] / "evaluation_results_2026-09-30T16-49-55Z.json"
+RESULTS_PATH = Path(__file__).resolve().parent / "evaluation_results_2026-09-30T16-49-55Z.json"
 
 
 @st.cache_data
