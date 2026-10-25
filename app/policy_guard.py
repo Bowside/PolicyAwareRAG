@@ -288,6 +288,15 @@ def requires_semantic_policy_review(
     Unconstrained permissions, such as the full-access administrative policy, are
     treated as open for this secondary review decision. The caller must perform
     deterministic authorization before using this helper.
+
+    Args:
+        user_roles: Roles available to the caller.
+        purpose: Requested policy purpose, if supplied.
+        action: Requested policy action, if supplied.
+        intent: Natural-language request used to infer missing values.
+
+    Returns:
+        ``True`` when a matching permission requires semantic review.
     """
     normalized_action = normalize_policy_action(action or infer_action_from_intent(intent or ""))
     normalized_purpose = normalize_policy_purpose(purpose or infer_purpose_from_intent(intent or ""))

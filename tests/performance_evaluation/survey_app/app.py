@@ -1,3 +1,5 @@
+"""Streamlit browser for inspecting saved performance-evaluation records."""
+
 from __future__ import annotations
 
 import json
@@ -14,6 +16,11 @@ RESULTS_PATH = Path(__file__).resolve().parent / "evaluation_results_2026-09-30T
 
 @st.cache_data
 def load_results() -> list[dict[str, Any]]:
+    """Load valid evaluation records from the configured results file.
+
+    Returns:
+        Evaluation records whose values are dictionaries.
+    """
     with RESULTS_PATH.open("r", encoding="utf-8") as file:
         payload = json.load(file)
     results = payload.get("results", [])
@@ -21,18 +28,43 @@ def load_results() -> list[dict[str, Any]]:
 
 
 def first_value(value: Any, fallback: str = "-") -> str:
+    """Convert a value to display text, using a fallback for empty values.
+
+    Args:
+        value: Value to convert.
+        fallback: Text to use when ``value`` is empty or ``None``.
+
+    Returns:
+        Display-ready text.
+    """
     if value is None or value == "":
         return fallback
     return str(value)
 
 
 def result_label(result: dict[str, Any]) -> str:
+    """Build the selector label for one evaluation record.
+
+    Args:
+        result: Evaluation record containing case and correlation metadata.
+
+    Returns:
+        A label combining the case type and correlation ID.
+    """
     correlation_id = first_value(result.get("correlationId"))
     case_type = first_value(result.get("case_type"), "unknown case")
     return f"{case_type} | {correlation_id}"
 
 
 def render_metric_summary(results: list[dict[str, Any]]) -> None:
+    """Render aggregate counts and latency metrics for evaluation records.
+
+    Args:
+        results: Evaluation records to summarize.
+
+    Returns:
+        None.
+    """
     passed = sum(bool(result.get("passed")) for result in results)
     allowed = sum(result.get("actual_outcome") == "allow" for result in results)
     average_latency = sum(float(result.get("http_latency_ms") or 0) for result in results) / len(results)
@@ -47,6 +79,14 @@ def render_metric_summary(results: list[dict[str, Any]]) -> None:
 
 
 def render_record(result: dict[str, Any]) -> None:
+    """Render the detailed survey view for one evaluation record.
+
+    Args:
+        result: Evaluation record to display.
+
+    Returns:
+        None.
+    """
     st.subheader(first_value(result.get("case_type"), "Evaluation record"))
     st.code(first_value(result.get("correlationId")), language=None)
 
