@@ -58,7 +58,12 @@ def test_get_foundry_settings_uses_environment_values(monkeypatch):
 
 @patch("app.rag_chain.SentenceTransformer")
 def test_get_embedding_model_passes_huggingface_token(mock_sentence_transformer, monkeypatch):
-    """Ensure private Hugging Face embedding models receive the configured token."""
+    """Ensure private Hugging Face embedding models receive the configured token.
+
+    Args:
+        mock_sentence_transformer: Mock embedding-model constructor.
+        monkeypatch: Pytest fixture for temporary environment and module changes.
+    """
     import app.rag_chain as rag_chain
 
     monkeypatch.setenv("LOCAL_EMBEDDING_MODEL", "google/embeddinggemma-300m")
@@ -115,7 +120,11 @@ def test_observer_evaluations_accept_redacted_answers():
 
 
 def test_load_reference_answers_reads_curated_question_mapping(tmp_path):
-    """Ensure optional curated reference answers load from JSON."""
+    """Ensure optional curated reference answers load from JSON.
+
+    Args:
+        tmp_path: Pytest temporary directory fixture.
+    """
     reference_path = tmp_path / "reference_answers.json"
     reference_path.write_text('{"Question?": "Reference answer."}', encoding="utf-8")
 
@@ -135,7 +144,12 @@ def test_resolve_reference_answer_uses_case_type_when_question_variant_differs()
 
 @patch("azure.cosmos.CosmosClient")
 def test_get_evaluation_context_resolves_document_ids(mock_cosmos_client, monkeypatch):
-    """Ensure evaluation context uses document bodies rather than source IDs."""
+    """Ensure evaluation context uses document bodies rather than source IDs.
+
+    Args:
+        mock_cosmos_client: Mock Cosmos DB client.
+        monkeypatch: Pytest fixture for temporary environment changes.
+    """
     monkeypatch.setenv("COSMOSDB_ENDPOINT", "https://example.documents.azure.com:443/")
     monkeypatch.setenv("COSMOSDB_KEY", "test-key")
     container = mock_cosmos_client.return_value.get_database_client.return_value.get_container_client.return_value
@@ -146,7 +160,12 @@ def test_get_evaluation_context_resolves_document_ids(mock_cosmos_client, monkey
 
 @patch("azure.cosmos.CosmosClient")
 def test_get_evaluation_context_reads_pipeline_step_document_ids(mock_cosmos_client, monkeypatch):
-    """Ensure finalized audit records resolve IDs stored on retrieval steps."""
+    """Ensure finalized audit records resolve IDs stored on retrieval steps.
+
+    Args:
+        mock_cosmos_client: Mock Cosmos DB client.
+        monkeypatch: Pytest fixture for temporary environment changes.
+    """
     monkeypatch.setenv("COSMOSDB_ENDPOINT", "https://example.documents.azure.com:443/")
     monkeypatch.setenv("COSMOSDB_KEY", "test-key")
     container = mock_cosmos_client.return_value.get_database_client.return_value.get_container_client.return_value

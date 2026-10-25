@@ -36,7 +36,11 @@ _REQUEST_INTERVAL_SECONDS = 0.0
 
 
 def wait_for_request_slot() -> None:
-    """Throttle evaluation requests globally across worker threads."""
+    """Throttle evaluation requests globally across worker threads.
+
+    Returns:
+        None.
+    """
     global _NEXT_REQUEST_TIME
     if _REQUEST_INTERVAL_SECONDS <= 0:
         return
@@ -199,7 +203,14 @@ def load_reference_answers(path: Path = REFERENCE_ANSWERS_PATH) -> Dict[str, str
 
 
 def _normalize_reference_lookup(value: str) -> str:
-    """Normalize a question for stable comparison across variants."""
+    """Normalize a question for stable comparison across variants.
+
+    Args:
+        value: Question text to normalize.
+
+    Returns:
+        Lowercase alphanumeric text with normalized whitespace.
+    """
     text = str(value or "").lower()
     text = re.sub(r"[^a-z0-9]+", " ", text)
     return " ".join(text.split())
@@ -216,6 +227,14 @@ def resolve_reference_answer(
     while the curated reference file stores a prior set of canonical questions. This
     helper falls back from exact key matching to a case-type-aware lookup so the
     evaluator still has reference data even when the concrete subject phrase varies.
+
+    Args:
+        case: Evaluation case metadata used for case-type matching.
+        user_query: Generated evaluation question.
+        reference_answers: Optional curated question-to-answer mapping.
+
+    Returns:
+        The matching reference answer, or ``None`` when no match exists.
     """
     if reference_answers is None:
         reference_answers = load_reference_answers()
@@ -353,7 +372,14 @@ _EGRESS_SENSITIVE_PATTERNS = {
 
 
 def assess_egress_exposure(answer: str) -> List[str]:
-    """Return deterministic sensitive-data signals found in the final answer."""
+    """Return deterministic sensitive-data signals found in the final answer.
+
+    Args:
+        answer: Final answer text to inspect.
+
+    Returns:
+        Sensitive-data signal names detected in the answer.
+    """
     return [
         name
         for name, pattern in _EGRESS_SENSITIVE_PATTERNS.items()
@@ -362,7 +388,14 @@ def assess_egress_exposure(answer: str) -> List[str]:
 
 
 def expected_egress_decision(case: Dict[str, Any]) -> str:
-    """Return whether the final answer should be allowed to contain sensitive data."""
+    """Return whether the final answer should be allowed to contain sensitive data.
+
+    Args:
+        case: Evaluation case containing the expected outcome and user roles.
+
+    Returns:
+        ``"deny"`` when sensitive data should be blocked; otherwise ``"allow"``.
+    """
     if case.get("expected_outcome") == "deny":
         return "deny"
 
@@ -593,6 +626,15 @@ def select_cases(
         return all_cases
 
     def select_balanced(candidate_cases: Iterable[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+        """Select cases round-robin from shuffled case-type groups.
+
+        Args:
+            candidate_cases: Cases grouped by their ``case_type`` field.
+            limit: Maximum number of cases to select.
+
+        Returns:
+            A balanced list containing no more than ``limit`` cases.
+        """
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for case in candidate_cases:
             grouped.setdefault(case["case_type"], []).append(case)
@@ -773,7 +815,11 @@ def run_suite(
 
 
 def main() -> None:
-    """Parse command-line options and run the configured evaluation suite."""
+    """Parse command-line options and run the configured evaluation suite.
+
+    Returns:
+        None.
+    """
     import argparse
 
     parser = argparse.ArgumentParser(description="Run the PolicyAwareRAG evaluation suite.")

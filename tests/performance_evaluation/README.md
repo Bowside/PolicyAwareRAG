@@ -1,7 +1,7 @@
 # Performance evaluations
 
 This folder contains the evaluation runner, result files, reference answers,
-figures, and analysis notebook.
+figures, analysis notebook, and the optional Streamlit survey browser.
 
 ## Prerequisites
 
@@ -29,6 +29,10 @@ and in the evaluator when base and final answers are both required.
 The deployed Function App must also have `LOCAL_EMBEDDING_MODEL` and
 `HUGGINGFACE_TOKEN` configured. Do not commit the token to the repository.
 
+The evaluator sends `question`, `userRoles`, `purpose`, `action`, `userId`,
+`correlationId`, and (when enabled) `includeEvaluationDetails` to `POST /api/rag`.
+Set `FUNCTION_APP_KEY` when the target requires an `x-functions-key` header.
+
 To retrieve audit records and per-step metrics, also set:
 
 ```env
@@ -50,8 +54,11 @@ The `.env` file is ignored by Git and must not be committed.
 python tests/performance_evaluation/run_evaluations.py
 ```
 
-By default, all evaluation cases run with two concurrent threads and a
-one-second interval between request starts.
+The catalog contains 430 cases: 20 cases for each of 20 standard policy case
+types, 20 restricted-export cases, and 10 deterministic red-team cases. By
+default, all cases run with two concurrent threads and a one-second interval
+between request starts. The evaluator writes one timestamped JSON file beside
+the runner.
 
 ## Control threads and test count
 
@@ -67,6 +74,11 @@ with at most 8 concurrent workers. Both values must be at least 1. When
 `--max-tests` is supplied, the sample reserves `ceil(max-tests * 0.10)` cases
 for the red-team suite, with at least one red-team case. If `--max-tests` is
 omitted, all cases run.
+
+Sampling is round-robin across case types and uses seed `42` by default. The
+command-line default for `--request-interval` is `1.0` seconds; pass `0` to
+remove pacing. `run_suite()` can also be imported and called directly, in which
+case its default request interval is `0.0` seconds.
 
 Use `--seed` to reproduce the same sample later:
 
@@ -107,6 +119,11 @@ Each result includes the request, response, outcome, latency, token, and audit
 fields. When Cosmos enrichment is enabled, it also includes retrieved document
 context and named pipeline-step metrics. Token counts are estimates based on
 four characters per token, not provider billing values.
+
+The evaluator checks the returned correlation ID, expected allow or deny
+outcome, and possible sensitive-data exposure. `--skip-cosmos-enrichment`
+skips the evaluator's audit-record and source-context reads but does not change
+the Function App's retrieval or audit behavior.
 
 ## Human-curated references
 
